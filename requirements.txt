@@ -1,1 +1,1 @@
-# TO DO
+pydantic>=2.14,<3
