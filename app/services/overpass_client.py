@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -20,14 +21,12 @@ from app.schemas import (
     PlaceCategory,
     PlaceName,
 )
-
 from app.utils.http_guard import (
     BodyTooLargeError,
     check_base_url,
     check_user_agent,
     read_capped,
 )
-
 from app.utils.throttle import Clock, Cooldown, KeyedLocks, Sleep, Spacer, TTLCache
 
 logger = logging.getLogger(__name__)
@@ -54,8 +53,12 @@ ACCOMMODATION_VALUES = (
     "wilderness_hut",
 )
 
+# calibration, bucharest 7.7 km: full query took 22.7 s, so 25 s was too tight
 QUERY_TIMEOUT_S = 60
 QUERY_MAXSIZE_BYTES = 128 * 1024 * 1024
+# overpass outputs nodes, then ways, then relations, so a cap cuts big places first
+# calibration, bucharest: 426 attractions and 1069 restaurants in total
+# notable places get their own output so a cap never drops them
 NOTABLE_ATTRACTIONS_CAP = 300
 OTHER_ATTRACTIONS_CAP = 200
 NOTABLE_RESTAURANTS_CAP = 100
@@ -64,9 +67,11 @@ WEB_RESTAURANTS_CAP = 200
 # query time plus up to 15 s server slot wait plus margin
 TOTAL_TIMEOUT_S = 80.0
 CONNECT_TIMEOUT_S = 5.0
+# calibration: about 435 bytes per tag-only element, 800 elements is about 350 KB
 MAX_BODY_BYTES = 2_000_000
 # assumption: no per-second limit in the policy, keep requests apart anyway
 MIN_INTERVAL_S = 1.0
+# policy: pause 30 s after a 429 or 406
 REFUSAL_COOLDOWN_S = 30.0
 # assumption: pois change slowly
 CACHE_TTL_S = 7 * 24 * 3600.0
@@ -89,6 +94,52 @@ MAX_PER_KIND = 6
 QUOTA_EXEMPT_KINDS = ("tourism=attraction",)
 # same name within this distance is one place, e.g. node plus building way
 DEDUPE_DISTANCE_M = 50.0
+# a restaurant this close to a chosen attraction with a shared distinctive name word
+# is the same building, e.g. Hanul Manuc and Manuc's Inn, 30 m apart in osm
+SAME_BUILDING_DISTANCE_M = 50.0
+MIN_NAME_WORD = 4
+# assumption: common english and romanian words that do not identify a place
+GENERIC_NAME_WORDS = frozenset(
+    {
+        "bistro",
+        "biserica",
+        "casa",
+        "castelul",
+        "castle",
+        "central",
+        "centrala",
+        "church",
+        "city",
+        "garden",
+        "gardens",
+        "gradina",
+        "grand",
+        "hanul",
+        "house",
+        "hotel",
+        "manastirea",
+        "memorial",
+        "monastery",
+        "monument",
+        "museum",
+        "muzeu",
+        "muzeul",
+        "national",
+        "nationala",
+        "palace",
+        "palatul",
+        "parc",
+        "parcul",
+        "park",
+        "piata",
+        "restaurant",
+        "square",
+        "strada",
+        "street",
+        "tower",
+        "turnul",
+    }
+)
 
 # assumption: score weights, notability beats completeness beats distance
 NOTABILITY_KEYS = ("wikidata", "wikipedia")
@@ -121,14 +172,18 @@ class OverpassError(Exception):
         super().__init__(message)
         self.message = message
 
+
 class NoPlacesFoundError(OverpassError):
     pass
+
 
 class OverpassUnavailableError(OverpassError):
     pass
 
+
 class _Center(BaseModel):
     model_config = ConfigDict(extra="ignore")
+
     lat: float
     lon: float
 
@@ -286,6 +341,23 @@ def _dedupe(ranked: list[_Scored]) -> list[_Scored]:
     return kept
 
 
+def _name_words(name: str) -> set[str]:
+    # lowercase without diacritics, so palatul and pălatul or manuc's and manuc compare equal
+    plain = unicodedata.normalize("NFKD", name.casefold())
+    plain = "".join(ch for ch in plain if not unicodedata.combining(ch))
+    words = re.findall(r"[a-z0-9]+", plain)
+    return {w for w in words if len(w) >= MIN_NAME_WORD and w not in GENERIC_NAME_WORDS}
+
+
+def _same_building(restaurant: _Scored, attractions: list[_Scored]) -> bool:
+    words = _name_words(restaurant.name)
+    return any(
+        restaurant.coords.distance_km(a.coords) * 1000 <= SAME_BUILDING_DISTANCE_M
+        and words & _name_words(a.name)
+        for a in attractions
+    )
+
+
 def _pick_attractions(ranked: list[_Scored]) -> list[_Scored]:
     picked: list[_Scored] = []
     skipped: list[_Scored] = []
@@ -349,7 +421,12 @@ def parse_candidates(center: Coordinates, radius_m: int, body: bytes) -> PlaceCa
     # also drops an element listed twice, it has the same name at 0 m
     ranked = _dedupe(sorted(scored, key=_Scored.sort_key))
     attractions = _pick_attractions([s for s in ranked if s.category is PlaceCategory.ATTRACTION])
-    restaurants = [s for s in ranked if s.category is PlaceCategory.RESTAURANT][:TOP_RESTAURANTS]
+    # the attraction stays, its restaurant would only repeat the visit
+    restaurants = [
+        s
+        for s in ranked
+        if s.category is PlaceCategory.RESTAURANT and not _same_building(s, attractions)
+    ][:TOP_RESTAURANTS]
     chosen = attractions + restaurants
     if not chosen:
         raise NoPlacesFoundError("no places found near this city")

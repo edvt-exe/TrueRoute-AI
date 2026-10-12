@@ -31,7 +31,10 @@ from app.services.overpass_client import (
     OverpassClient,
     OverpassError,
     OverpassUnavailableError,
+    MIN_NAME_WORD,
+    SAME_BUILDING_DISTANCE_M,
     _classify,
+    _name_words,
     _score,
     build_query,
     parse_candidates,
@@ -294,6 +297,116 @@ def test_dedupe() -> None:
     names = [(p.name, p.osm_type) for p in res.places]
     assert names == [("palace", "way"), ("Other", "node"), ("Palace", "node")]
     assert [p.osm_id for p in res.places if p.name == "Palace"] == [3]
+
+
+# same building in two categories
+
+
+def at(dlat_m: float, dlon_m: float = 0.0) -> tuple[float, float]:
+    # metres to degrees near bucharest, about 111 km per degree of latitude
+    return CENTER.lat + dlat_m / 111_195, CENTER.lon + dlon_m / 79_400
+
+
+def attraction(osm_id: int, name: str, north_m: float = 0.0, **tags: str) -> dict[str, Any]:
+    lat, lon = at(north_m)
+    return el("relation", osm_id, lat, lon, tourism="attraction", name=name, wikidata="Q", **tags)
+
+
+def eatery(osm_id: int, name: str, north_m: float = 0.0, **tags: str) -> dict[str, Any]:
+    lat, lon = at(north_m)
+    return el("node", osm_id, lat, lon, amenity="restaurant", name=name, **tags)
+
+
+def names(res: Any) -> list[str]:
+    return [p.name for p in res.places]
+
+
+def test_restaurant_inside_attraction_is_dropped() -> None:
+    # live data: Hanul Manuc and Manuc's Inn are about 30 m apart
+    res = parse([attraction(1, "Hanul Manuc"), eatery(2, "Manuc's Inn", 30), eatery(3, "Caru' cu Bere", 60)])
+    assert names(res) == ["Hanul Manuc", "Caru' cu Bere"]
+
+
+def test_freed_restaurant_slot_goes_to_the_next_one() -> None:
+    eateries = [eatery(100 + i, f"Bistro Number{i}", 200 + i) for i in range(1, 12)]
+    res = parse([attraction(1, "Hanul Manuc"), eatery(2, "Manuc's Inn", 10, website="w"), *eateries])
+    restaurants = [p.name for p in res.places if p.category is PlaceCategory.RESTAURANT]
+    assert "Manuc's Inn" not in restaurants
+    assert len(restaurants) == TOP_RESTAURANTS
+
+
+def test_close_restaurant_with_other_name_stays() -> None:
+    # Caru' cu Bere stands next to Stavropoleos but is its own place
+    res = parse([attraction(1, "Stavropoleos Monastery"), eatery(2, "Caru' cu Bere", 20)])
+    assert names(res) == ["Stavropoleos Monastery", "Caru' cu Bere"]
+
+
+def test_same_word_far_away_stays() -> None:
+    res = parse([attraction(1, "Hanul Manuc"), eatery(2, "Manuc Grill", 51)])
+    assert names(res) == ["Hanul Manuc", "Manuc Grill"]
+
+
+def test_distance_limit_is_inclusive(monkeypatch: pytest.MonkeyPatch) -> None:
+    places = [attraction(1, "Hanul Manuc"), eatery(2, "Manuc's Inn", 40)]
+    a, b = (Coordinates(lat=p["center"]["lat"] if "center" in p else p["lat"], lon=p["center"]["lon"] if "center" in p else p["lon"]) for p in places)
+    exact = a.distance_km(b) * 1000
+    monkeypatch.setattr("app.services.overpass_client.SAME_BUILDING_DISTANCE_M", exact)
+    assert names(parse(places)) == ["Hanul Manuc"]
+    monkeypatch.setattr("app.services.overpass_client.SAME_BUILDING_DISTANCE_M", exact - 1e-6)
+    assert names(parse(places)) == ["Hanul Manuc", "Manuc's Inn"]
+
+
+def test_generic_words_do_not_match() -> None:
+    res = parse(
+        [
+            attraction(1, "Muzeul National de Arta"),
+            eatery(2, "Muzeul Restaurant National", 10),
+            attraction(3, "Grand Palace Park", 200),
+            eatery(4, "Grand Park House Bistro", 210),
+            attraction(5, "Manastirea Stavropoleos Monastery Church", 400),
+            eatery(6, "Monastery Kitchen", 410),
+        ]
+    )
+    assert len(res.places) == 6
+
+
+def test_short_words_do_not_match() -> None:
+    res = parse([attraction(1, "Arc de Triumf"), eatery(2, "Arc Bar", 10)])
+    assert names(res) == ["Arc de Triumf", "Arc Bar"]
+
+
+def test_diacritics_and_case_are_ignored() -> None:
+    res = parse([attraction(1, "Palatul Brăgădiru"), eatery(2, "BRAGADIRU Brewery", 20)])
+    assert names(res) == ["Palatul Brăgădiru"]
+
+
+def test_only_chosen_attractions_count() -> None:
+    # the matching attraction is not in the top 20, so the restaurant stays
+    top = [attraction(10 + i, f"Landmark Number{i}", 500 + i, website="w", phone="p") for i in range(1, 21)]
+    weak = el("node", 99, CENTER.lat, CENTER.lon, tourism="museum", name="Hanul Manuc")
+    res = parse([*top, weak, eatery(2, "Manuc's Inn", 10)])
+    assert "Hanul Manuc" not in names(res)
+    assert "Manuc's Inn" in names(res)
+
+
+@pytest.mark.parametrize(
+    ("name", "words"),
+    [
+        ("Hanul Manuc", {"manuc"}),
+        ("Manuc's Inn", {"manuc"}),
+        ("Caru' cu Bere", {"caru", "bere"}),
+        ("Muzeul Național de Artă", {"arta"}),
+        ("Stavropoleos Monastery", {"stavropoleos"}),
+        ("Mănăstirea Stavropoleos", {"stavropoleos"}),
+        ("Grand Park", set()),
+    ],
+)
+def test_name_words(name: str, words: set[str]) -> None:
+    assert _name_words(name) == words
+
+
+def test_same_building_limits() -> None:
+    assert (SAME_BUILDING_DISTANCE_M, MIN_NAME_WORD) == (50, 4)
 
 
 def test_top_caps_and_ref_order() -> None:
