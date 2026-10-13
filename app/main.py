@@ -36,7 +36,8 @@ from app.services.overpass_client import (
     OverpassError,
     OverpassUnavailableError,
 )
-from app.services.walking_routes import ORS_ATTRIBUTION, WalkingRouter
+from app.services.osrm_routes import OSRM_ATTRIBUTION, OsrmRouter
+from app.services.walking_routes import ORS_ATTRIBUTION, PROVIDER_ORS, PROVIDER_OSRM, WalkingRouter
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,19 @@ ERROR_TABLE: tuple[tuple[type[Exception], int, str, str], ...] = (
     (LLMInvalidOutputError, 502, "planner_failed", _PLANNER),
     (LLMConfigError, 500, "server_misconfigured", "the server is misconfigured"),
 )
+
+
+# the response credits every routing service that drew one of its days
+ROUTE_ATTRIBUTIONS: tuple[tuple[str, str], ...] = (
+    (PROVIDER_ORS, ORS_ATTRIBUTION),
+    (PROVIDER_OSRM, OSRM_ATTRIBUTION),
+)
+
+
+def routing_attribution(itinerary: Itinerary) -> str | None:
+    used = {p.route_provider for p in itinerary.day_plans if p.distance_source is DistanceSource.WALKING}
+    parts = [text for provider, text in ROUTE_ATTRIBUTIONS if provider in used]
+    return "; ".join(parts) or None
 
 
 class PipelineTimeoutError(Exception):
@@ -205,13 +219,20 @@ def _build_lifespan(
                 geocoder=Geocoder(http, cfg.app_user_agent, cfg.nominatim_base_url),
                 places=OverpassClient(http, cfg.app_user_agent, cfg.overpass_base_url),
                 planner=LLMAgent(llm, cfg.llm_model, cfg.llm_effort),
-                routes=WalkingRouter(http, cfg.ors_api_key, cfg.app_user_agent, cfg.ors_base_url),
+                routes=WalkingRouter(
+                    http,
+                    cfg.ors_api_key,
+                    cfg.app_user_agent,
+                    cfg.ors_base_url,
+                    fallback=OsrmRouter(http, cfg.app_user_agent, cfg.osrm_base_url) if cfg.osrm_enabled else None,
+                ),
             )
             logger.info(
-                "trueroute started, model %s effort %s, walking routes %s, access code %s, limits %d per ip hour %d per day",
+                "trueroute started, model %s effort %s, ors %s, osrm fallback %s, access code %s, limits %d per ip hour %d per day",
                 cfg.llm_model,
                 cfg.llm_effort,
                 "on" if cfg.ors_api_key is not None else "off",
+                "on" if cfg.osrm_enabled else "off",
                 "on" if cfg.demo_access_code is not None else "off",
                 cfg.rate_limit_per_ip_hour,
                 cfg.daily_itinerary_cap,
@@ -301,7 +322,7 @@ def create_app(
         )
         return ItineraryResponse(
             itinerary=itinerary,
-            routing_attribution=ORS_ATTRIBUTION if walking else None,
+            routing_attribution=routing_attribution(itinerary),
         )
 
     app.include_router(api)

@@ -10,6 +10,7 @@ from app.services.geocoder import DEFAULT_BASE_URL as NOMINATIM_DEFAULT_URL
 from app.services.llm_agent import ALLOWED_EFFORTS, DEFAULT_EFFORT, DEFAULT_MODEL, is_model_id
 from app.services.overpass_client import DEFAULT_BASE_URL as OVERPASS_DEFAULT_URL
 from app.security import DEFAULT_DAILY_CAP, DEFAULT_PER_IP_HOUR, check_access_code
+from app.services.osrm_routes import DEFAULT_BASE_URL as OSRM_DEFAULT_URL
 from app.services.walking_routes import DEFAULT_BASE_URL as ORS_DEFAULT_URL
 from app.utils.http_guard import check_base_url, check_user_agent
 
@@ -56,6 +57,9 @@ class Settings(BaseSettings):
     # optional, without it every day uses aerial distances
     ors_api_key: SecretStr | None = None
     ors_base_url: str = ORS_DEFAULT_URL
+    # backup walking routes when ors is down, slow or has no key, fossgis public osrm by default
+    osrm_enabled: bool = True
+    osrm_base_url: str = OSRM_DEFAULT_URL
     # optional, when set the itinerary endpoint needs the X-Access-Code header
     demo_access_code: SecretStr | None = None
     # assumption: demo sized limits, the daily cap keeps llm and ors spend bounded
@@ -116,7 +120,7 @@ class Settings(BaseSettings):
             check_access_code(value.get_secret_value())
         return value
 
-    @field_validator("nominatim_base_url", "overpass_base_url", "ors_base_url")
+    @field_validator("nominatim_base_url", "overpass_base_url", "ors_base_url", "osrm_base_url")
     @classmethod
     def _check_url(cls, value: str) -> str:
         return check_base_url(_no_key(value))

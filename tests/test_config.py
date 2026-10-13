@@ -30,6 +30,8 @@ NAMES = (
     "OVERPASS_BASE_URL",
     "ORS_API_KEY",
     "ORS_BASE_URL",
+    "OSRM_ENABLED",
+    "OSRM_BASE_URL",
     "DEMO_ACCESS_CODE",
     "RATE_LIMIT_PER_IP_HOUR",
     "DAILY_ITINERARY_CAP",
@@ -382,3 +384,22 @@ def test_demo_limit_bounds_accepted(tmp_path: Path) -> None:
     assert (s.rate_limit_per_ip_hour, s.daily_itinerary_cap) == (1000, 10_000)
     s = load_settings(minimal(tmp_path, "RATE_LIMIT_PER_IP_HOUR=1\nDAILY_ITINERARY_CAP=1\n"))
     assert (s.rate_limit_per_ip_hour, s.daily_itinerary_cap) == (1, 1)
+
+# osrm fallback
+
+
+def test_osrm_defaults(tmp_path: Path) -> None:
+    s = load_settings(minimal(tmp_path))
+    assert s.osrm_enabled is True
+    assert s.osrm_base_url == "https://routing.openstreetmap.de"
+
+
+def test_osrm_can_be_switched_off(tmp_path: Path) -> None:
+    s = load_settings(minimal(tmp_path, "OSRM_ENABLED=false\nOSRM_BASE_URL=https://osrm.example.org/\n"))
+    assert s.osrm_enabled is False
+    assert s.osrm_base_url == "https://osrm.example.org"
+
+
+@pytest.mark.parametrize(("line", "name"), [("OSRM_ENABLED=maybe", "OSRM_ENABLED"), ("OSRM_BASE_URL=http://osrm.example.org", "OSRM_BASE_URL")])
+def test_osrm_bad_values(tmp_path: Path, line: str, name: str) -> None:
+    assert name in config_error(minimal(tmp_path, line + "\n")).message

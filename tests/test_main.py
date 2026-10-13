@@ -44,6 +44,7 @@ from app.services.llm_agent import (
     NotEnoughPlacesError,
 )
 from app.services.overpass_client import NoPlacesFoundError, OverpassClient, OverpassUnavailableError
+from app.services.osrm_routes import OSRM_ATTRIBUTION, OsrmRouter
 from app.services.walking_routes import ORS_ATTRIBUTION, WalkingRouter
 from app.security import CSP, DemoGuard
 
@@ -357,7 +358,7 @@ def test_error_log_names_code_not_message(caplog: pytest.LogCaptureFixture) -> N
 
 @pytest.fixture
 def settings_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    for name in ("ANTHROPIC_API_KEY", "APP_USER_AGENT", "LLM_MODEL", "LLM_EFFORT", "LOG_LEVEL", "NOMINATIM_BASE_URL", "OVERPASS_BASE_URL", "ORS_API_KEY", "ORS_BASE_URL", "DEMO_ACCESS_CODE", "RATE_LIMIT_PER_IP_HOUR", "DAILY_ITINERARY_CAP"):
+    for name in ("ANTHROPIC_API_KEY", "APP_USER_AGENT", "LLM_MODEL", "LLM_EFFORT", "LOG_LEVEL", "NOMINATIM_BASE_URL", "OVERPASS_BASE_URL", "ORS_API_KEY", "ORS_BASE_URL", "OSRM_ENABLED", "OSRM_BASE_URL", "DEMO_ACCESS_CODE", "RATE_LIMIT_PER_IP_HOUR", "DAILY_ITINERARY_CAP"):
         monkeypatch.delenv(name, raising=False)
     path = tmp_path / ".env"
     path.write_text(
@@ -399,7 +400,11 @@ def test_lifespan_builds_and_closes_real_services(settings_file: Path, restore_l
         # walking routes share the client, off without a key
         assert isinstance(svc.routes, WalkingRouter)
         assert svc.routes._client is svc.geocoder._client
-        assert svc.routes.enabled is False
+        # no ors key in the test settings, the osrm fallback is on by default
+        assert svc.routes._key is None
+        assert isinstance(svc.routes._fallback, OsrmRouter)
+        assert svc.routes._fallback._client is svc.geocoder._client
+        assert svc.routes.enabled is True
         # demo guard on with the default limits, no code in the test settings
         guard: DemoGuard = app.state.guard
         assert isinstance(guard, DemoGuard)
@@ -685,3 +690,49 @@ def test_lifespan_builds_guard_with_code(settings_file: Path, restore_logging: N
         # refused before any upstream call, so no network is needed here
         res = client.post("/api/itinerary", json=BODY)
     assert res.status_code == 401
+
+
+def test_lifespan_without_osrm(settings_file: Path, restore_logging: None) -> None:
+    with settings_file.open("a", encoding="utf-8") as f:
+        f.write("OSRM_ENABLED=false\n")
+    app = create_app(settings=load_settings(settings_file))
+    with TestClient(app):
+        assert app.state.services.routes._fallback is None
+        assert app.state.services.routes.enabled is False
+
+
+def plan_with(providers: list[str | None]) -> Any:
+    from app.schemas import DayPlan, DayStop, Itinerary
+
+    plans = []
+    for d, provider in enumerate(providers, start=1):
+        a, b = CANDS.places[0], CANDS.places[1]
+        if provider is None:
+            plans.append(DayPlan(day=d, theme="t", stops=[DayStop(order=1, place=a), DayStop(order=2, place=b, leg_distance_km=0.1)], total_distance_km=0.1))
+        else:
+            plans.append(
+                DayPlan(
+                    day=d,
+                    theme="t",
+                    stops=[DayStop(order=1, place=a), DayStop(order=2, place=b, leg_distance_km=0.2, leg_walk_minutes=3)],
+                    total_distance_km=0.2,
+                    distance_source="walking",
+                    total_walk_minutes=3,
+                    route_latlon=[(44.431, 26.1), (44.432, 26.1)],
+                    route_provider=provider,
+                )
+            )
+    return Itinerary(city="Bucharest", days=len(plans), pace="moderate", budget="medium", day_plans=plans, unused_places=0)
+
+
+@pytest.mark.parametrize(
+    ("providers", "expected"),
+    [
+        ([None, None], None),
+        (["openrouteservice", None], ORS_ATTRIBUTION),
+        (["osrm", "osrm"], OSRM_ATTRIBUTION),
+        (["osrm", "openrouteservice"], f"{ORS_ATTRIBUTION}; {OSRM_ATTRIBUTION}"),
+    ],
+)
+def test_routing_attribution_credits_each_provider(providers: list[str | None], expected: str | None) -> None:
+    assert main.routing_attribution(plan_with(providers)) == expected
