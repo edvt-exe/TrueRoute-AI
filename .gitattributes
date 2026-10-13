@@ -1,0 +1,4 @@
+# vendored files must keep their upstream bytes, tests pin their hashes
+frontend/vendor/** -text
+*.woff2 binary
+*.png binary

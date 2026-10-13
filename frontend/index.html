@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>TrueRoute</title>
+  <meta name="description" content="Day-by-day city walking plans built from real OpenStreetMap places.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+  <script src="vendor/leaflet/leaflet.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="TrueRoute home">
+      <svg class="brand-mark" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+        <circle cx="5" cy="15" r="2.5"></circle>
+        <circle cx="15" cy="5" r="2.5"></circle>
+        <path d="M5 12.5V9a3 3 0 0 1 3-3h4.5"></path>
+      </svg>
+      <span>TrueRoute</span>
+    </a>
+    <nav class="topbar-nav" aria-label="Resources">
+      <a href="/docs">API docs</a>
+    </nav>
+  </header>
+
+  <div class="workspace">
+    <aside id="sidebar" class="sidebar">
+      <section id="plan-view" class="view" aria-labelledby="plan-title">
+        <div class="view-head">
+          <h1 id="plan-title">Plan a trip</h1>
+          <p>Real places from OpenStreetMap, ordered into walkable days.</p>
+        </div>
+
+        <form id="plan-form" class="plan-form" novalidate>
+          <section class="card" aria-labelledby="destination-title">
+            <h2 id="destination-title" class="card-title">Destination</h2>
+            <div class="field">
+              <label for="city">City</label>
+              <input id="city" name="city" type="text" required maxlength="100" autocomplete="address-level2" placeholder="e.g. Lisbon" spellcheck="false">
+            </div>
+            <div class="row">
+              <label for="days">Days</label>
+              <div class="stepper">
+                <button type="button" class="stepper-btn" data-step="-1" aria-label="Fewer days" aria-controls="days">
+                  <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.5 8h9"></path></svg>
+                </button>
+                <input id="days" name="days" type="number" min="1" max="7" step="1" value="2" inputmode="numeric">
+                <button type="button" class="stepper-btn" data-step="1" aria-label="More days" aria-controls="days">
+                  <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.5 8h9M8 3.5v9"></path></svg>
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section class="card" aria-labelledby="preferences-title">
+            <h2 id="preferences-title" class="card-title">Preferences</h2>
+            <fieldset class="field">
+              <legend>Pace</legend>
+              <div class="segmented">
+                <input type="radio" id="pace-relaxed" name="pace" value="relaxed"><label for="pace-relaxed">Relaxed<span class="seg-hint">3 stops</span></label>
+                <input type="radio" id="pace-moderate" name="pace" value="moderate" checked><label for="pace-moderate">Moderate<span class="seg-hint">4 stops</span></label>
+                <input type="radio" id="pace-packed" name="pace" value="packed"><label for="pace-packed">Packed<span class="seg-hint">5 stops</span></label>
+              </div>
+            </fieldset>
+            <fieldset class="field">
+              <legend>Budget</legend>
+              <div class="segmented">
+                <input type="radio" id="budget-low" name="budget" value="low"><label for="budget-low">Low</label>
+                <input type="radio" id="budget-medium" name="budget" value="medium" checked><label for="budget-medium">Medium</label>
+                <input type="radio" id="budget-high" name="budget" value="high"><label for="budget-high">High</label>
+              </div>
+            </fieldset>
+          </section>
+
+          <section class="card" aria-labelledby="interests-title">
+            <div class="card-title-row">
+              <h2 id="interests-title" class="card-title">Interests</h2>
+              <span class="card-aside">Optional, up to 5</span>
+            </div>
+            <fieldset class="field">
+              <legend class="visually-hidden">Suggested interests</legend>
+              <div class="pills">
+                <input type="checkbox" id="int-history" name="interest" value="history"><label for="int-history">History</label>
+                <input type="checkbox" id="int-art" name="interest" value="art and museums"><label for="int-art">Art and museums</label>
+                <input type="checkbox" id="int-architecture" name="interest" value="architecture"><label for="int-architecture">Architecture</label>
+                <input type="checkbox" id="int-parks" name="interest" value="parks and nature"><label for="int-parks">Parks and nature</label>
+                <input type="checkbox" id="int-food" name="interest" value="local food"><label for="int-food">Local food</label>
+                <input type="checkbox" id="int-views" name="interest" value="viewpoints"><label for="int-views">Viewpoints</label>
+              </div>
+            </fieldset>
+            <div class="field">
+              <label for="interests">Add your own</label>
+              <input id="interests" name="interests" type="text" maxlength="250" autocomplete="off" placeholder="e.g. street art, churches" aria-describedby="interests-hint">
+              <p id="interests-hint" class="hint">Separate with commas, 40 characters each.</p>
+            </div>
+          </section>
+
+          <section class="card" id="access-field" hidden aria-labelledby="access-title">
+            <h2 id="access-title" class="card-title">Access</h2>
+            <div class="field">
+              <label for="access-code">Access code</label>
+              <input id="access-code" name="access-code" type="password" maxlength="200" autocomplete="off" spellcheck="false" aria-describedby="access-hint">
+              <p id="access-hint" class="hint">This demo is private. Ask its owner for the code.</p>
+            </div>
+          </section>
+
+          <div class="form-actions">
+            <button id="submit" class="btn btn-primary" type="submit">Generate itinerary</button>
+            <p id="status" class="status" role="status" aria-live="polite"></p>
+          </div>
+        </form>
+      </section>
+
+      <section id="result" class="view" hidden aria-labelledby="result-title">
+        <div class="result-head">
+          <button id="back" class="btn btn-ghost btn-small" type="button">
+            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M10 3.5 5.5 8l4.5 4.5"></path></svg>
+            Edit plan
+          </button>
+          <h1 id="result-title" class="result-title" tabindex="-1"></h1>
+          <p id="result-meta" class="result-meta"></p>
+        </div>
+
+        <div id="day-tabs" class="tabs" role="tablist" aria-label="Days"></div>
+
+        <div id="day-panel" class="day-panel" role="tabpanel"></div>
+
+        <footer class="result-foot">
+          <p id="disclaimer"></p>
+          <p><a id="data-attribution" href="https://www.openstreetmap.org/copyright" rel="noopener" target="_blank"></a></p>
+        </footer>
+      </section>
+    </aside>
+
+    <main class="map-pane">
+      <div class="map-frame">
+        <div id="progress" class="progress" hidden></div>
+        <div id="map" class="map" role="region" aria-label="Map of the selected day"></div>
+        <div id="map-empty" class="map-empty">
+          <p class="map-empty-title">No itinerary yet</p>
+          <p id="map-empty-text">Choose a city and generate a plan to see each day's stops and walking route here.</p>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <noscript><p class="noscript">TrueRoute needs JavaScript to plan and show your days.</p></noscript>
+</body>
+</html>
