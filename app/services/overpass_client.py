@@ -58,8 +58,18 @@ QUERY_TIMEOUT_S = 60
 QUERY_MAXSIZE_BYTES = 128 * 1024 * 1024
 # overpass outputs nodes, then ways, then relations, so a cap cuts big places first
 # calibration, bucharest: 426 attractions and 1069 restaurants in total
-# notable places get their own output so a cap never drops them
-NOTABLE_ATTRACTIONS_CAP = 300
+# calibration, paris 5.1 km: one capped notable output of 300 returned 97 nodes, 205 ways and
+# no relations, so the louvre and the arc de triomphe never arrived
+# notable places come out in one batch per element type, so small nodes cannot crowd out buildings
+# assumption: paris has 97 notable nodes in total, the other two caps leave room for denser cities
+NOTABLE_NODES_CAP = 150
+NOTABLE_WAYS_CAP = 400
+NOTABLE_RELATIONS_CAP = 150
+NOTABLE_CAPS: dict[str, int] = {
+    "node": NOTABLE_NODES_CAP,
+    "way": NOTABLE_WAYS_CAP,
+    "relation": NOTABLE_RELATIONS_CAP,
+}
 OTHER_ATTRACTIONS_CAP = 200
 NOTABLE_RESTAURANTS_CAP = 100
 # assumption: a restaurant with no website and no wiki link ranks near the bottom anyway
@@ -67,7 +77,8 @@ WEB_RESTAURANTS_CAP = 200
 # query time plus up to 15 s server slot wait plus margin
 TOTAL_TIMEOUT_S = 80.0
 CONNECT_TIMEOUT_S = 5.0
-# calibration: about 435 bytes per tag-only element, 800 elements is about 350 KB
+# calibration: about 435 bytes per tag-only element, paris 800 elements was 420 KB
+# worst case is 1200 elements, about 650 KB
 MAX_BODY_BYTES = 2_000_000
 # assumption: no per-second limit in the policy, keep requests apart anyway
 MIN_INTERVAL_S = 1.0
@@ -248,13 +259,20 @@ def build_query(center: Coordinates, radius_m: int) -> str:
         f'  nwr["historic"~"^({historic})$"]["name"]{around};\n'
         f'  nwr["leisure"="park"]["name"]{around};\n'
         ")->.a;\n"
-        f'nwr["amenity"="restaurant"]["name"]{around}->.r;\n'
+        f'nwr["amenity"="restaurant"]["name"]{around}->.r0;\n'
+        # a place tagged as both is classified as an attraction, so it is sent once
+        "(.r0; - .a;)->.r;\n"
         '(nwr.a["wikidata"]; nwr.a["wikipedia"];)->.an;\n'
         "(.a; - .an;)->.ao;\n"
         '(nwr.r["wikidata"]; nwr.r["wikipedia"];)->.rn;\n'
         '(nwr.r["website"]; nwr.r["contact:website"];)->.rw;\n'
         "(.rw; - .rn;)->.rq;\n"
-        f".an out tags center {NOTABLE_ATTRACTIONS_CAP};\n"
+        "node.an->.ann;\n"
+        "way.an->.anw;\n"
+        "relation.an->.anr;\n"
+        f".ann out tags center {NOTABLE_NODES_CAP};\n"
+        f".anw out tags center {NOTABLE_WAYS_CAP};\n"
+        f".anr out tags center {NOTABLE_RELATIONS_CAP};\n"
         f".ao out tags center {OTHER_ATTRACTIONS_CAP};\n"
         f".rn out tags center {NOTABLE_RESTAURANTS_CAP};\n"
         f".rq out tags center {WEB_RESTAURANTS_CAP};\n"
@@ -390,6 +408,7 @@ def parse_candidates(center: Coordinates, radius_m: int, body: bytes) -> PlaceCa
         raise OverpassUnavailableError("overpass reported a query problem")
     scored: list[_Scored] = []
     skipped = 0
+    notable: Counter[str] = Counter()
     for raw in response.elements:
         try:
             element = _Element.model_validate(raw)
@@ -402,6 +421,8 @@ def parse_candidates(center: Coordinates, radius_m: int, body: bytes) -> PlaceCa
         if classified is None or name is None or coords is None:
             skipped += 1
             continue
+        if classified[0] is PlaceCategory.ATTRACTION and any(k in element.tags for k in NOTABILITY_KEYS):
+            notable[element.type] += 1
         distance_km = center.distance_km(coords)
         scored.append(
             _Scored(
@@ -418,6 +439,10 @@ def parse_candidates(center: Coordinates, radius_m: int, body: bytes) -> PlaceCa
         )
     if skipped:
         logger.info("overpass skipped %d unusable elements", skipped)
+    for osm_type, cap in NOTABLE_CAPS.items():
+        # a full batch means some notable places of this type were cut
+        if notable[osm_type] >= cap:
+            logger.warning("overpass notable %ss hit the cap of %d", osm_type, cap)
     # also drops an element listed twice, it has the same name at 0 m
     ranked = _dedupe(sorted(scored, key=_Scored.sort_key))
     attractions = _pick_attractions([s for s in ranked if s.category is PlaceCategory.ATTRACTION])

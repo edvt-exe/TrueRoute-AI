@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from app.schemas import BoundingBox, Coordinates, GeocodeResult, PlaceCategory
+import app.services.overpass_client as oc
 from app.services.overpass_client import (
     CACHE_TTL_S,
     FAME_MAX_LANGUAGES,
@@ -89,22 +90,30 @@ def test_build_query_text() -> None:
     assert f'nwr["tourism"~"^(attraction|museum|gallery|viewpoint|zoo|aquarium|theme_park)$"]["name"]{around};' in q
     assert f'nwr["historic"~"^(castle|monument|fort|archaeological_site)$"]["name"]{around};' in q
     assert f'nwr["leisure"="park"]["name"]{around};' in q
-    assert f'nwr["amenity"="restaurant"]["name"]{around}->.r;' in q
+    assert f'nwr["amenity"="restaurant"]["name"]{around}->.r0;' in q
     assert ")->.a;" in q
+    # a place tagged as attraction and restaurant is only in the attraction sets
+    assert "(.r0; - .a;)->.r;" in q
     # notable places get their own capped output so big ways and relations survive
     assert '(nwr.a["wikidata"]; nwr.a["wikipedia"];)->.an;' in q
+    # one notable batch per element type, nodes cannot crowd out buildings
+    assert "node.an->.ann;" in q
+    assert "way.an->.anw;" in q
+    assert "relation.an->.anr;" in q
     assert "(.a; - .an;)->.ao;" in q
     assert '(nwr.r["wikidata"]; nwr.r["wikipedia"];)->.rn;' in q
     assert '(nwr.r["website"]; nwr.r["contact:website"];)->.rw;' in q
     assert "(.rw; - .rn;)->.rq;" in q
     outs = [line for line in q.splitlines() if " out " in line]
     assert outs == [
-        ".an out tags center 300;",
+        ".ann out tags center 150;",
+        ".anw out tags center 400;",
+        ".anr out tags center 150;",
         ".ao out tags center 200;",
         ".rn out tags center 100;",
         ".rq out tags center 200;",
     ]
-    assert ".r out" not in q
+    assert ".r out" not in q and ".an out" not in q and ".r0 out" not in q
     for excluded in ("memorial", "artwork", "cafe"):
         assert excluded not in q
 
@@ -921,3 +930,108 @@ def make(**kwargs: Any) -> OverpassClient:
 def test_bad_constructor_args(kwargs: dict[str, Any]) -> None:
     with pytest.raises(ValueError):
         make(**kwargs)
+
+# dense cities
+
+
+def test_notable_caps_cover_each_type() -> None:
+    assert oc.NOTABLE_CAPS == {"node": 150, "way": 400, "relation": 150}
+    q = build_query(CENTER, RADIUS)
+    for osm_type, cap in oc.NOTABLE_CAPS.items():
+        assert f"{osm_type}.an->" in q
+        assert f" out tags center {cap};" in q
+
+
+def test_worst_case_fits_the_body_cap() -> None:
+    elements = sum(oc.NOTABLE_CAPS.values()) + oc.OTHER_ATTRACTIONS_CAP + oc.NOTABLE_RESTAURANTS_CAP + oc.WEB_RESTAURANTS_CAP
+    assert elements == 1200
+    # calibration: paris returned 800 elements in 420144 bytes
+    per_element = 420_144 / 800
+    assert elements * per_element * 2 < oc.MAX_BODY_BYTES
+
+
+def paris_shaped() -> list[dict[str, Any]]:
+    # 97 notable nodes like central paris, then the big landmarks as a way and a relation
+    els: list[dict[str, Any]] = []
+    for n in range(1, 98):
+        els.append(
+            {
+                "type": "node",
+                "id": n,
+                "lat": 44.436 + n * 0.0001,
+                "lon": 26.103,
+                "tags": {"name": f"Statue {n}", "tourism": "attraction", "wikidata": f"Q{n}", "website": "x", "phone": "x"},
+            }
+        )
+    langs = {f"name:{c}": "x" for c in ("de", "fr", "ja", "ru", "zh", "es", "it", "pt", "pl", "nl", "sv", "fi", "da", "cs", "hu", "ro", "el", "tr", "ko", "ar", "he", "uk")}
+    els.append(
+        {
+            "type": "way",
+            "id": 9_000_001,
+            "center": {"lat": 44.44, "lon": 26.11},
+            "tags": {"name": "Arc de Triomphe", "historic": "monument", "wikidata": "Q64436", **langs},
+        }
+    )
+    els.append(
+        {
+            "type": "relation",
+            "id": 7_515_426,
+            "center": {"lat": 44.437, "lon": 26.1},
+            "tags": {"name": "Musée du Louvre", "name:en": "Louvre Museum", "tourism": "museum", "wikidata": "Q19675", **langs},
+        }
+    )
+    return els
+
+
+def test_paris_shaped_landmarks_survive_and_rank_first() -> None:
+    body = json.dumps({"elements": paris_shaped()}).encode()
+    cands = parse_candidates(CENTER, RADIUS, body)
+    names = [p.name for p in cands.places]
+    assert names[:2] == ["Louvre Museum", "Arc de Triomphe"]
+    louvre = cands.places[0]
+    assert (louvre.osm_type, louvre.osm_id) == ("relation", 7_515_426)
+
+
+def test_full_notable_batch_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger="app.services.overpass_client")
+    nodes = [
+        {"type": "node", "id": n, "lat": 44.436, "lon": 26.103 + n * 0.00001, "tags": {"name": f"N{n}", "tourism": "museum", "wikidata": "Q1"}}
+        for n in range(1, oc.NOTABLE_NODES_CAP + 1)
+    ]
+    parse_candidates(CENTER, RADIUS, json.dumps({"elements": nodes}).encode())
+    assert [r.getMessage() for r in caplog.records] == ["overpass notable nodes hit the cap of 150"]
+
+
+def test_batch_below_cap_is_quiet(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger="app.services.overpass_client")
+    nodes = [
+        {"type": "node", "id": n, "lat": 44.436, "lon": 26.103 + n * 0.00001, "tags": {"name": f"N{n}", "tourism": "museum", "wikidata": "Q1"}}
+        for n in range(1, oc.NOTABLE_NODES_CAP)
+    ]
+    # restaurants and plain attractions never count toward the notable caps
+    nodes += [
+        {"type": "node", "id": 10_000 + n, "lat": 44.436, "lon": 26.2, "tags": {"name": f"R{n}", "amenity": "restaurant", "wikidata": "Q2"}}
+        for n in range(5)
+    ]
+    nodes += [{"type": "node", "id": 20_000 + n, "lat": 44.436, "lon": 26.2, "tags": {"name": f"A{n}", "tourism": "museum"}} for n in range(5)]
+    parse_candidates(CENTER, RADIUS, json.dumps({"elements": nodes}).encode())
+    assert caplog.records == []
+
+
+def test_candidates_are_listed_best_first_per_category() -> None:
+    # prompts.py turns list position into the rank the planner sees
+    els = paris_shaped()
+    els.append({"type": "node", "id": 50_001, "lat": 44.436, "lon": 26.103, "tags": {"name": "Plain Bistro", "amenity": "restaurant", "website": "x"}})
+    els.append({"type": "node", "id": 50_002, "lat": 44.436, "lon": 26.104, "tags": {"name": "Famous Bistro", "amenity": "restaurant", "wikidata": "Q9", "website": "x"}})
+    body = json.dumps({"elements": els}).encode()
+    cands = parse_candidates(CENTER, RADIUS, body)
+    tags_by_id = {(e["type"], e["id"]): e["tags"] for e in els}
+    for category in PlaceCategory:
+        group = [p for p in cands.places if p.category is category]
+        scores = [oc._score(tags_by_id[(p.osm_type, p.osm_id)], CENTER.distance_km(p.coords), RADIUS) for p in group]
+        assert scores == sorted(scores, reverse=True), category
+    restaurants = [p.name for p in cands.places if p.category is PlaceCategory.RESTAURANT]
+    assert restaurants == ["Famous Bistro", "Plain Bistro"]
+    # attractions come first, then restaurants
+    cats = [p.category for p in cands.places]
+    assert cats == sorted(cats, key=lambda c: c is PlaceCategory.RESTAURANT)

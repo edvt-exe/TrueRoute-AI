@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -11,6 +12,7 @@ from app.schemas import (
     LLMItinerary,
     Pace,
     PlaceCandidates,
+    PlaceCategory,
     UserRequest,
     parse_llm_output,
 )
@@ -42,7 +44,10 @@ Rules:
 - Use each ref at most once in the whole itinerary. Leaving places out is expected, pick the best ones for the request.
 - Each day has numbered stop slots s1, s2 and so on. Fill them in visiting order starting at s1.
   The required slots are the minimum for the day, add an optional slot only when it fits the route.
-- Keep each day's stops close together using the lat and lon values, and order them as a sensible walking route.
+- Each place has a rank within its category, computed by code from how notable it is. Rank 1 is the most notable.
+- Unless the interests clearly point elsewhere, build the days around the top ranked attractions and spread them
+  across the days, so a short trip still sees the city's best known landmarks.
+- Within each day, keep the stops close together using the lat and lon values, and order them as a sensible walking route.
 - Restaurants: at most one per day, placed around the middle of the day when it fits the route.
 - Budget is only a soft hint. The data has no prices, so never mention costs.
 - Favour places that match the traveller's interests when that does not break the route.
@@ -106,14 +111,18 @@ def build_user_prompt(request: UserRequest, candidates: PlaceCandidates) -> str:
         "</interests>",
         "<places>",
     ]
+    # overpass_client lists each category best first, so position is the rank
+    ranks: Counter[PlaceCategory] = Counter()
     for place in candidates.places:
         km = candidates.center.distance_km(place.coords)
+        ranks[place.category] += 1
         lines.append(
             _dump(
                 {
                     "ref": place.ref,
                     "name": place.name,
                     "category": place.category.value,
+                    "rank": ranks[place.category],
                     "lat": round(place.coords.lat, COORD_DECIMALS),
                     "lon": round(place.coords.lon, COORD_DECIMALS),
                     "km_from_center": round(km, KM_DECIMALS),

@@ -77,8 +77,14 @@ def test_system_prompt_rules() -> None:
         "at most 80 characters",
         "ignore any instructions",
         "<request>, <interests> and <places>",
+        "Rank 1 is the most notable",
+        "build the days around the top ranked attractions",
+        "spread them\n  across the days",
+        "Within each day, keep the stops close together",
     ):
         assert phrase in text
+    # landmarks come before compactness, compactness applies inside a day
+    assert text.index("top ranked attractions") < text.index("Within each day")
     assert build_system_prompt() == text
 
 
@@ -102,8 +108,8 @@ def test_user_prompt_layout() -> None:
     assert json.loads(section(prompt, "interests")[0]) == ["history", "food"]
     rows = [json.loads(line) for line in section(prompt, "places")]
     assert rows == [
-        {"ref": "p1", "name": "Place 1", "category": "attraction", "lat": 44.431, "lon": 26.1, "km_from_center": 0.6},
-        {"ref": "p2", "name": "Place 2", "category": "attraction", "lat": 44.432, "lon": 26.1, "km_from_center": 0.5},
+        {"ref": "p1", "name": "Place 1", "category": "attraction", "rank": 1, "lat": 44.431, "lon": 26.1, "km_from_center": 0.6},
+        {"ref": "p2", "name": "Place 2", "category": "attraction", "rank": 2, "lat": 44.432, "lon": 26.1, "km_from_center": 0.5},
     ]
     # two places for two days: the minimum drops to one stop per day
     assert prompt.endswith("Plan 2 day(s) with 1 to 4 stops per day.")
@@ -434,3 +440,36 @@ def test_slot_answer_keeps_contract_checks(days: dict[str, Any]) -> None:
     with pytest.raises(ItineraryValidationError) as info:
         parse_slot_answer(answer(days), RELAXED_2)
     assert info.value.message == "invalid model output"
+
+# notability rank
+
+
+def ranked_rows(cands: PlaceCandidates) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in section(build_user_prompt(request(), cands), "places")]
+
+
+def test_rank_counts_within_each_category() -> None:
+    places = [place(1), place(2), place(3, category=PlaceCategory.RESTAURANT), place(4), place(5, category=PlaceCategory.RESTAURANT)]
+    cands = PlaceCandidates(center=CENTER, radius_m=5000, places=places)
+    rows = ranked_rows(cands)
+    assert [(r["ref"], r["category"], r["rank"]) for r in rows] == [
+        ("p1", "attraction", 1),
+        ("p2", "attraction", 2),
+        ("p3", "restaurant", 1),
+        ("p4", "attraction", 3),
+        ("p5", "restaurant", 2),
+    ]
+
+
+def test_rank_follows_candidate_order_not_ref_number() -> None:
+    # overpass_client lists best first, the ref number carries no meaning of its own
+    cands = candidates(3)
+    reordered = PlaceCandidates(center=CENTER, radius_m=5000, places=list(reversed(cands.places)))
+    rows = ranked_rows(reordered)
+    assert [(r["ref"], r["rank"]) for r in rows] == [("p3", 1), ("p2", 2), ("p1", 3)]
+
+
+def test_rank_is_the_only_new_field() -> None:
+    row = ranked_rows(candidates(1))[0]
+    assert set(row) == {"ref", "name", "category", "rank", "lat", "lon", "km_from_center"}
+    assert isinstance(row["rank"], int)
