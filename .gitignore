@@ -25,3 +25,8 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+
+# extra
+*.pem
+*.key
+secrets/
