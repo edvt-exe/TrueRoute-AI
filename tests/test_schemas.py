@@ -5,6 +5,12 @@ from pydantic import ValidationError
 
 from app.schemas import (
     DISCLAIMER,
+    MAX_ROUTE_POINTS,
+    MIXED_DISCLAIMER,
+    WALKING_DISCLAIMER,
+    DayPlan,
+    DayStop,
+    DistanceSource,
     MAX_DETAIL_CHARS,
     MAX_LLM_OUTPUT_CHARS,
     BoundingBox,
@@ -18,6 +24,7 @@ from app.schemas import (
     PlaceCandidates,
     PlaceCategory,
     UserRequest,
+    disclaimer_for,
     parse_llm_output,
     resolve,
 )
@@ -386,3 +393,112 @@ def test_itinerary_day_count_must_match() -> None:
     it = resolve(llm, make_candidates(3), make_request(days=1))
     with pytest.raises(ValidationError, match="day_plans must match days"):
         Itinerary.model_validate(it.model_dump() | {"days": 2})
+
+# walking day plans
+
+
+def walking_day(minutes: tuple[int, ...] = (12, 7), **overrides: object) -> dict[str, object]:
+    stops: list[dict[str, object]] = [{"order": 1, "place": make_place(1), "leg_distance_km": None}]
+    for i, m in enumerate(minutes, start=2):
+        stops.append({"order": i, "place": make_place(i), "leg_distance_km": 1.0, "leg_walk_minutes": m})
+    data: dict[str, object] = {
+        "day": 1,
+        "theme": "Old town",
+        "stops": stops,
+        "total_distance_km": float(len(minutes)),
+        "distance_source": "walking",
+        "total_walk_minutes": sum(minutes),
+        "route_latlon": [(0.0, 1.0), (0.0, 2.0), (0.0, 3.0)],
+    }
+    return data | overrides
+
+
+def test_walking_day_ok() -> None:
+    plan = DayPlan.model_validate(walking_day())
+    assert plan.distance_source is DistanceSource.WALKING
+    assert plan.total_walk_minutes == 19
+    assert plan.route_latlon[1] == (0.0, 2.0)
+
+
+def test_aerial_is_the_default() -> None:
+    plan = DayPlan(day=1, theme="t", stops=[DayStop(order=1, place=make_place(1))], total_distance_km=0)
+    assert plan.distance_source is DistanceSource.AERIAL
+    assert plan.route_latlon == [] and plan.total_walk_minutes is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"distance_source": "aerial"},
+        {"distance_source": "aerial", "route_latlon": [], "total_walk_minutes": None},
+    ],
+)
+def test_aerial_day_rejects_walking_data(overrides: dict[str, object]) -> None:
+    # minutes on the legs alone are enough to reject an aerial day
+    with pytest.raises(ValidationError, match="aerial day"):
+        DayPlan.model_validate(walking_day(**overrides))
+
+
+def test_aerial_day_rejects_route_alone() -> None:
+    data = walking_day(distance_source="aerial", total_walk_minutes=None)
+    data["stops"] = [dict(s, leg_walk_minutes=None) for s in data["stops"]]  # type: ignore[attr-defined]
+    with pytest.raises(ValidationError, match="aerial day"):
+        DayPlan.model_validate(data)
+    data["route_latlon"] = []
+    assert DayPlan.model_validate(data).distance_source is DistanceSource.AERIAL
+
+
+def test_walking_day_needs_route() -> None:
+    with pytest.raises(ValidationError, match="route"):
+        DayPlan.model_validate(walking_day(route_latlon=[(0.0, 1.0)]))
+
+
+def test_walking_day_needs_two_stops() -> None:
+    with pytest.raises(ValidationError, match="two stops"):
+        DayPlan.model_validate(walking_day(minutes=(), total_distance_km=0.0))
+
+
+def test_walking_day_needs_minutes_on_every_leg() -> None:
+    data = walking_day()
+    data["stops"][2]["leg_walk_minutes"] = None  # type: ignore[index]
+    with pytest.raises(ValidationError, match="every leg"):
+        DayPlan.model_validate(data)
+
+
+def test_walking_day_first_stop_has_no_minutes() -> None:
+    data = walking_day()
+    data["stops"][0]["leg_walk_minutes"] = 3  # type: ignore[index]
+    with pytest.raises(ValidationError, match="every leg"):
+        DayPlan.model_validate(data)
+
+
+def test_walking_day_total_must_match() -> None:
+    with pytest.raises(ValidationError, match="sum of the legs"):
+        DayPlan.model_validate(walking_day(total_walk_minutes=20))
+
+
+@pytest.mark.parametrize("point", [(91.0, 0.0), (0.0, 181.0), (-90.5, 0.0)])
+def test_route_points_are_bounded(point: tuple[float, float]) -> None:
+    with pytest.raises(ValidationError):
+        DayPlan.model_validate(walking_day(route_latlon=[(0.0, 1.0), point]))
+
+
+def test_route_point_cap() -> None:
+    many = [(0.0, i / 1000) for i in range(MAX_ROUTE_POINTS + 1)]
+    with pytest.raises(ValidationError):
+        DayPlan.model_validate(walking_day(route_latlon=many))
+    assert len(DayPlan.model_validate(walking_day(route_latlon=many[:-1])).route_latlon) == MAX_ROUTE_POINTS
+
+
+def test_negative_minutes_rejected() -> None:
+    with pytest.raises(ValidationError):
+        DayPlan.model_validate(walking_day(minutes=(-1, 5)))
+
+
+def test_disclaimer_for() -> None:
+    walking = DayPlan.model_validate(walking_day())
+    aerial = DayPlan(day=1, theme="t", stops=[DayStop(order=1, place=make_place(1))], total_distance_km=0)
+    assert disclaimer_for([aerial, aerial]) == DISCLAIMER
+    assert disclaimer_for([walking, walking]) == WALKING_DISCLAIMER
+    assert disclaimer_for([walking, aerial]) == MIXED_DISCLAIMER
+    assert "aerial" in MIXED_DISCLAIMER and "aerial" not in WALKING_DISCLAIMER

@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from app.utils.throttle import Cooldown, KeyedLocks, Spacer, TTLCache
+from app.utils.throttle import Cooldown, KeyedLocks, SlidingWindow, Spacer, TTLCache
 
 
 class FakeClock:
@@ -221,3 +221,53 @@ def test_keyed_locks_release_on_exception() -> None:
         return len(locks)
 
     assert asyncio.run(main()) == 0
+
+# sliding window
+
+
+def test_window_allows_up_to_limit() -> None:
+    clock = FakeClock()
+    win = SlidingWindow(3, 60.0, clock)
+    assert [win.try_acquire() for _ in range(4)] == [True, True, True, False]
+
+
+def test_window_refusal_is_not_counted() -> None:
+    clock = FakeClock()
+    win = SlidingWindow(1, 60.0, clock)
+    assert win.try_acquire()
+    for _ in range(5):
+        assert not win.try_acquire()
+    clock.now += 60.0
+    assert win.try_acquire()
+
+
+def test_window_slides() -> None:
+    clock = FakeClock()
+    win = SlidingWindow(2, 60.0, clock)
+    assert win.try_acquire()
+    clock.now += 30.0
+    assert win.try_acquire()
+    clock.now += 29.9
+    assert not win.try_acquire()
+    # the first hit leaves the window exactly 60 s after it was taken
+    clock.now += 0.1
+    assert win.try_acquire()
+    assert not win.try_acquire()
+
+
+def test_window_retry_after() -> None:
+    clock = FakeClock()
+    win = SlidingWindow(2, 60.0, clock)
+    assert win.retry_after() == 0.0
+    win.try_acquire()
+    clock.now += 10.0
+    win.try_acquire()
+    assert win.retry_after() == pytest.approx(50.0)
+    clock.now += 50.0
+    assert win.retry_after() == 0.0
+
+
+@pytest.mark.parametrize(("limit", "window"), [(0, 60.0), (1, 0.0), (1, -1.0)])
+def test_window_rejects_bad_args(limit: int, window: float) -> None:
+    with pytest.raises(ValueError):
+        SlidingWindow(limit, window, FakeClock())

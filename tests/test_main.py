@@ -1,10 +1,13 @@
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 import app.main as main
 from app.config import ConfigError, load_settings
@@ -41,6 +44,8 @@ from app.services.llm_agent import (
     NotEnoughPlacesError,
 )
 from app.services.overpass_client import NoPlacesFoundError, OverpassClient, OverpassUnavailableError
+from app.services.walking_routes import ORS_ATTRIBUTION, WalkingRouter
+from app.security import CSP, DemoGuard
 
 MARKER = "SECRET-MARKER"
 BODY = {"city": "Bucharest", "days": 2, "pace": "moderate", "interests": ["history"]}
@@ -123,7 +128,7 @@ def fakes(
 
 def post(services: Services, body: Any = BODY, **kwargs: Any) -> Any:
     with TestClient(create_app(services=services, **kwargs), raise_server_exceptions=False) as client:
-        return client.post("/itinerary", json=body)
+        return client.post("/api/itinerary", json=body)
 
 
 # happy path
@@ -134,7 +139,8 @@ def test_itinerary_ok() -> None:
     res = post(svc)
     assert res.status_code == 200
     data = res.json()
-    assert set(data) == {"itinerary", "attribution", "attribution_url"}
+    assert set(data) == {"itinerary", "attribution", "attribution_url", "routing_attribution"}
+    assert data["routing_attribution"] is None
     assert data["attribution"] == "Data © OpenStreetMap contributors, available under the Open Database License (ODbL)"
     assert data["attribution_url"] == "https://www.openstreetmap.org/copyright"
     it = data["itinerary"]
@@ -173,7 +179,7 @@ def test_no_internals_in_response() -> None:
 def test_health_makes_no_upstream_calls() -> None:
     svc = fakes()
     with TestClient(create_app(services=svc)) as client:
-        res = client.get("/health")
+        res = client.get("/api/health")
     assert (res.status_code, res.json()) == (200, {"status": "ok"})
     assert svc.geocoder.calls == []  # type: ignore[attr-defined]
 
@@ -182,7 +188,7 @@ def test_docs_are_on() -> None:
     with TestClient(create_app(services=fakes())) as client:
         assert client.get("/docs").status_code == 200
         schema = client.get("/openapi.json").json()
-    assert "/itinerary" in schema["paths"]
+    assert "/api/itinerary" in schema["paths"]
 
 
 # error table
@@ -292,7 +298,7 @@ def test_invalid_values_not_echoed() -> None:
 
 def test_malformed_json() -> None:
     with TestClient(create_app(services=fakes())) as client:
-        res = client.post("/itinerary", content=b'{"city": ', headers={"content-type": "application/json"})
+        res = client.post("/api/itinerary", content=b'{"city": ', headers={"content-type": "application/json"})
     assert res.status_code == 422
     assert res.json()["error"]["code"] == "invalid_request"
 
@@ -301,7 +307,7 @@ def test_body_too_large() -> None:
     svc = fakes()
     big = b'{"city": "' + b"x" * MAX_BODY_BYTES + b'"}'
     with TestClient(create_app(services=svc)) as client:
-        res = client.post("/itinerary", content=big, headers={"content-type": "application/json"})
+        res = client.post("/api/itinerary", content=big, headers={"content-type": "application/json"})
     assert res.status_code == 413
     assert res.json()["error"]["code"] == "payload_too_large"
     assert svc.geocoder.calls == []  # type: ignore[attr-defined]
@@ -311,7 +317,7 @@ def test_body_at_limit_is_accepted() -> None:
     body = b'{"city": "Bucharest", "days": 2}'
     padded = body + b" " * (MAX_BODY_BYTES - len(body))
     with TestClient(create_app(services=fakes())) as client:
-        res = client.post("/itinerary", content=padded, headers={"content-type": "application/json"})
+        res = client.post("/api/itinerary", content=padded, headers={"content-type": "application/json"})
     assert res.status_code == 200
     assert MAX_BODY_BYTES == 16_384
 
@@ -319,7 +325,7 @@ def test_body_at_limit_is_accepted() -> None:
 def test_unknown_route_and_method_use_error_shape() -> None:
     with TestClient(create_app(services=fakes())) as client:
         missing = client.get("/nope")
-        wrong = client.get("/itinerary")
+        wrong = client.get("/api/itinerary")
     assert missing.status_code == 404
     assert missing.json() == {"error": {"code": "http_404", "message": "Not Found"}}
     assert wrong.status_code == 405
@@ -351,7 +357,7 @@ def test_error_log_names_code_not_message(caplog: pytest.LogCaptureFixture) -> N
 
 @pytest.fixture
 def settings_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    for name in ("ANTHROPIC_API_KEY", "APP_USER_AGENT", "LLM_MODEL", "LLM_EFFORT", "LOG_LEVEL", "NOMINATIM_BASE_URL", "OVERPASS_BASE_URL"):
+    for name in ("ANTHROPIC_API_KEY", "APP_USER_AGENT", "LLM_MODEL", "LLM_EFFORT", "LOG_LEVEL", "NOMINATIM_BASE_URL", "OVERPASS_BASE_URL", "ORS_API_KEY", "ORS_BASE_URL", "DEMO_ACCESS_CODE", "RATE_LIMIT_PER_IP_HOUR", "DAILY_ITINERARY_CAP"):
         monkeypatch.delenv(name, raising=False)
     path = tmp_path / ".env"
     path.write_text(
@@ -390,9 +396,18 @@ def test_lifespan_builds_and_closes_real_services(settings_file: Path, restore_l
         # urls and log levels come from the settings
         assert svc.geocoder._search_url == "https://geo.example.org/search"
         assert svc.places._url == "https://ovp.example.org/api/interpreter"
+        # walking routes share the client, off without a key
+        assert isinstance(svc.routes, WalkingRouter)
+        assert svc.routes._client is svc.geocoder._client
+        assert svc.routes.enabled is False
+        # demo guard on with the default limits, no code in the test settings
+        guard: DemoGuard = app.state.guard
+        assert isinstance(guard, DemoGuard)
+        assert guard.requires_code is False
+        assert guard._per_ip_hour == 5
         assert logging.getLogger().level == logging.WARNING
         assert logging.getLogger("anthropic").level == logging.WARNING
-        assert client.get("/health").status_code == 200
+        assert client.get("/api/health").status_code == 200
         http = svc.geocoder._client
         llm = svc.planner._client
         assert not http.is_closed and not llm.is_closed()
@@ -430,3 +445,243 @@ def test_module_app_exists_without_env() -> None:
     assert main.app.title == "TrueRoute AI"
     assert ATTRIBUTION.startswith("Data © OpenStreetMap contributors")
     assert ATTRIBUTION_URL == "https://www.openstreetmap.org/copyright"
+
+# walking routes
+
+
+def ors_ok(request: httpx.Request) -> httpx.Response:
+    # minimal ors v2 geojson shape, straight lines between the stops
+    coords = json.loads(request.content)["coordinates"]
+    legs = len(coords) - 1
+    body = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {
+                    "segments": [{"distance": 250.0, "duration": 180.0} for _ in range(legs)],
+                    "way_points": list(range(len(coords))),
+                },
+                "geometry": {"type": "LineString", "coordinates": coords},
+            }
+        ],
+    }
+    return httpx.Response(200, json=body)
+
+
+def post_with_ors(responder: Any, key: str | None = f"ors-{MARKER}") -> tuple[Any, list[httpx.Request]]:
+    seen: list[httpx.Request] = []
+
+    def record(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return responder(request)
+
+    async def build() -> WalkingRouter:
+        return WalkingRouter(
+            httpx.AsyncClient(transport=httpx.MockTransport(record)),
+            SecretStr(key) if key else None,
+            "TrueRoute-AI-tests/0.1 (+https://example.org)",
+        )
+
+    router = asyncio.run(build())
+    svc = Services(geocoder=FakeGeocoder(), places=FakePlaces(), planner=FakePlanner(), routes=router)
+    return post(svc), seen
+
+
+def test_walking_days_in_response() -> None:
+    res, seen = post_with_ors(ors_ok)
+    assert res.status_code == 200
+    data = res.json()
+    assert len(seen) == 2
+    assert data["routing_attribution"] == ORS_ATTRIBUTION
+    it = data["itinerary"]
+    assert "aerial" not in it["disclaimer"]
+    day = it["day_plans"][0]
+    assert day["distance_source"] == "walking"
+    assert day["total_walk_minutes"] == 3
+    assert day["stops"][1]["leg_distance_km"] == 0.25
+    assert day["stops"][1]["leg_walk_minutes"] == 3
+    # lat, lon pairs for leaflet
+    assert day["route_latlon"] == [[44.431, 26.1], [44.432, 26.1]]
+    assert MARKER not in res.text
+
+
+def test_routing_failure_keeps_aerial_itinerary() -> None:
+    res, seen = post_with_ors(lambda r: httpx.Response(503))
+    assert res.status_code == 200
+    data = res.json()
+    assert data["routing_attribution"] is None
+    it = data["itinerary"]
+    assert [d["distance_source"] for d in it["day_plans"]] == ["aerial", "aerial"]
+    assert [d["route_latlon"] for d in it["day_plans"]] == [[], []]
+    assert it["day_plans"][0]["stops"][1]["leg_walk_minutes"] is None
+    assert "aerial" in it["disclaimer"]
+
+
+def test_mixed_days_response() -> None:
+    calls = {"n": 0}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return ors_ok(request) if calls["n"] == 1 else httpx.Response(404, json={"error": {"code": 2010}})
+
+    res, _ = post_with_ors(responder)
+    data = res.json()
+    assert data["routing_attribution"] == ORS_ATTRIBUTION
+    assert [d["distance_source"] for d in data["itinerary"]["day_plans"]] == ["walking", "aerial"]
+    assert "aerial" in data["itinerary"]["disclaimer"]
+
+
+def test_no_ors_key_makes_no_call() -> None:
+    res, seen = post_with_ors(ors_ok, key=None)
+    assert res.status_code == 200
+    assert seen == []
+    assert res.json()["routing_attribution"] is None
+
+
+class SlowRoutes:
+    async def attach(self, itinerary: Any) -> Any:
+        await asyncio.sleep(5)
+        return itinerary
+
+
+def test_routing_counts_toward_request_timeout() -> None:
+    svc = Services(geocoder=FakeGeocoder(), places=FakePlaces(), planner=FakePlanner(), routes=SlowRoutes())
+    res = post(svc, request_timeout_s=0.05)
+    assert res.status_code == 504
+
+# demo guard and /api
+
+
+CODE = f"demo-{MARKER}"
+
+
+def guarded(guard: DemoGuard, svc: Services | None = None) -> tuple[TestClient, Services]:
+    svc = svc or fakes()
+    return TestClient(create_app(services=svc, guard=guard), raise_server_exceptions=False), svc
+
+
+def test_access_code_required() -> None:
+    client, svc = guarded(DemoGuard(SecretStr(CODE)))
+    with client:
+        missing = client.post("/api/itinerary", json=BODY)
+        wrong = client.post("/api/itinerary", json=BODY, headers={"X-Access-Code": "wrong-code"})
+        right = client.post("/api/itinerary", json=BODY, headers={"X-Access-Code": CODE})
+    assert missing.status_code == wrong.status_code == 401
+    assert missing.json() == {"error": {"code": "access_denied", "message": "a valid access code is required"}}
+    assert right.status_code == 200
+    # refused requests never reach the pipeline
+    assert svc.geocoder.calls == ["Bucharest"]  # type: ignore[attr-defined]
+    assert MARKER not in missing.text + wrong.text
+
+
+def test_access_checked_before_body_validation() -> None:
+    client, _ = guarded(DemoGuard(SecretStr(CODE)))
+    with client:
+        res = client.post("/api/itinerary", json={"city": ""})
+    assert res.status_code == 401
+
+
+def test_rate_limit_response() -> None:
+    client, svc = guarded(DemoGuard(None, per_ip_hour=2))
+    with client:
+        codes = [client.post("/api/itinerary", json=BODY).status_code for _ in range(2)]
+        limited = client.post("/api/itinerary", json=BODY)
+    assert codes == [200, 200]
+    assert limited.status_code == 429
+    assert limited.json()["error"]["code"] == "rate_limited"
+    assert limited.headers["retry-after"].isdigit()
+    assert 1 <= int(limited.headers["retry-after"]) <= 3600
+    assert len(svc.geocoder.calls) == 2  # type: ignore[attr-defined]
+
+
+def test_daily_cap_response() -> None:
+    client, _ = guarded(DemoGuard(None, per_ip_hour=10, daily_cap=1))
+    with client:
+        client.post("/api/itinerary", json=BODY)
+        res = client.post("/api/itinerary", json=BODY)
+    assert res.status_code == 429
+    assert res.json()["error"]["code"] == "daily_cap_reached"
+    assert "retry-after" in res.headers
+
+
+def test_forwarded_header_cannot_dodge_the_limit() -> None:
+    # proxies are resolved by uvicorn FORWARDED_ALLOW_IPS, the app never reads the header
+    client, _ = guarded(DemoGuard(None, per_ip_hour=1))
+    with client:
+        first = client.post("/api/itinerary", json=BODY, headers={"X-Forwarded-For": "198.51.100.1"})
+        second = client.post("/api/itinerary", json=BODY, headers={"X-Forwarded-For": "198.51.100.2"})
+    assert (first.status_code, second.status_code) == (200, 429)
+
+
+def test_health_is_not_guarded() -> None:
+    client, _ = guarded(DemoGuard(SecretStr(CODE), per_ip_hour=1))
+    with client:
+        statuses = [client.get("/api/health").status_code for _ in range(5)]
+    assert statuses == [200] * 5
+
+
+def test_old_paths_are_gone() -> None:
+    with TestClient(create_app(services=fakes())) as client:
+        assert client.post("/itinerary", json=BODY).status_code == 404
+        assert client.get("/health").status_code == 404
+        paths = set(client.get("/openapi.json").json()["paths"])
+    assert paths == {"/api/itinerary", "/api/health"}
+
+
+def test_openapi_documents_guard_errors() -> None:
+    with TestClient(create_app(services=fakes())) as client:
+        responses = client.get("/openapi.json").json()["paths"]["/api/itinerary"]["post"]["responses"]
+    assert {"401", "429"} <= set(responses)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("post", "/api/itinerary", BODY),
+        ("get", "/api/health", None),
+        ("get", "/api/nope", None),
+        ("post", "/api/itinerary", {"city": ""}),
+    ],
+)
+def test_security_headers_on_api(method: str, path: str, body: Any) -> None:
+    with TestClient(create_app(services=fakes())) as client:
+        res = getattr(client, method)(path, **({"json": body} if body is not None else {}))
+    assert res.headers["content-security-policy"] == CSP
+    assert res.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+    assert res.headers["x-content-type-options"] == "nosniff"
+    assert res.headers["x-frame-options"] == "DENY"
+    assert res.headers["cache-control"] == "no-store"
+
+
+def test_security_headers_on_413_and_refusals() -> None:
+    client, _ = guarded(DemoGuard(SecretStr(CODE)))
+    with client:
+        big = client.post("/api/itinerary", content=b"x" * (MAX_BODY_BYTES + 1), headers={"content-type": "application/json"})
+        denied = client.post("/api/itinerary", json=BODY)
+    for res in (big, denied):
+        assert res.headers["x-content-type-options"] == "nosniff"
+        assert res.headers["content-security-policy"] == CSP
+    assert big.status_code == 413
+
+
+def test_docs_page_works_without_strict_csp() -> None:
+    with TestClient(create_app(services=fakes())) as client:
+        res = client.get("/docs")
+    assert res.status_code == 200
+    assert "content-security-policy" not in res.headers
+    assert res.headers["x-frame-options"] == "DENY"
+
+
+def test_lifespan_builds_guard_with_code(settings_file: Path, restore_logging: None) -> None:
+    with settings_file.open("a", encoding="utf-8") as f:
+        f.write(f"DEMO_ACCESS_CODE={CODE}\nRATE_LIMIT_PER_IP_HOUR=7\nDAILY_ITINERARY_CAP=50\n")
+    app = create_app(settings=load_settings(settings_file))
+    with TestClient(app, raise_server_exceptions=False) as client:
+        guard: DemoGuard = app.state.guard
+        assert guard.requires_code is True
+        assert guard._per_ip_hour == 7
+        assert guard._daily._limit == 50
+        # refused before any upstream call, so no network is needed here
+        res = client.post("/api/itinerary", json=BODY)
+    assert res.status_code == 401

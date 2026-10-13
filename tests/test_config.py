@@ -28,6 +28,11 @@ NAMES = (
     "APP_USER_AGENT",
     "NOMINATIM_BASE_URL",
     "OVERPASS_BASE_URL",
+    "ORS_API_KEY",
+    "ORS_BASE_URL",
+    "DEMO_ACCESS_CODE",
+    "RATE_LIMIT_PER_IP_HOUR",
+    "DAILY_ITINERARY_CAP",
     "LOG_LEVEL",
 )
 
@@ -281,3 +286,99 @@ def test_sdk_debug_is_suppressed(tmp_path: Path, restore_logging: None, caplog: 
     logging.getLogger("app.anything").debug("app debug line")
     assert "request body with prompt" not in caplog.text
     assert "app debug line" in caplog.text
+
+# walking routes
+
+
+ORS_KEY = f"5b3ce3597851110001cf6248{MARKER}"
+
+
+def test_ors_off_by_default(tmp_path: Path) -> None:
+    s = load_settings(minimal(tmp_path))
+    assert s.ors_api_key is None
+    assert s.ors_base_url == "https://api.openrouteservice.org"
+
+
+def test_ors_blank_key_is_off(tmp_path: Path) -> None:
+    assert load_settings(minimal(tmp_path, "ORS_API_KEY=\n")).ors_api_key is None
+    assert load_settings(minimal(tmp_path, "ORS_API_KEY=   \n")).ors_api_key is None
+
+
+def test_ors_key_loaded_and_hidden(tmp_path: Path) -> None:
+    s = load_settings(minimal(tmp_path, f"ORS_API_KEY={ORS_KEY}\nORS_BASE_URL=https://ors.example.org/\n"))
+    assert s.ors_api_key is not None and s.ors_api_key.get_secret_value() == ORS_KEY
+    assert s.ors_base_url == "https://ors.example.org"
+    assert MARKER not in repr(s) and MARKER not in str(s)
+
+
+def test_ors_key_with_space_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ORS_API_KEY", f"abc {MARKER}")
+    exc = config_error(minimal(tmp_path))
+    assert "ORS_API_KEY" in exc.message
+    assert MARKER not in exc.message
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://api.openrouteservice.org", "https://ors.example.org/?api_key=x", "https://u:p@ors.example.org"],
+)
+def test_ors_bad_url(tmp_path: Path, url: str) -> None:
+    exc = config_error(minimal(tmp_path, f"ORS_BASE_URL={url}\n"))
+    assert "ORS_BASE_URL" in exc.message
+
+
+def test_ors_key_in_url_rejected(tmp_path: Path) -> None:
+    exc = config_error(minimal(tmp_path, f"ORS_API_KEY={ORS_KEY}\nORS_BASE_URL=https://ors.example.org/{ORS_KEY}\n"))
+    assert "must not contain the ORS key" in exc.message
+    assert MARKER not in exc.message
+
+# demo protection
+
+
+CODE = f"demo-{MARKER}"
+
+
+def test_demo_defaults(tmp_path: Path) -> None:
+    s = load_settings(minimal(tmp_path))
+    assert s.demo_access_code is None
+    assert (s.rate_limit_per_ip_hour, s.daily_itinerary_cap) == (5, 100)
+
+
+def test_demo_blank_code_is_off(tmp_path: Path) -> None:
+    assert load_settings(minimal(tmp_path, "DEMO_ACCESS_CODE=\n")).demo_access_code is None
+
+
+def test_demo_values_loaded_and_code_hidden(tmp_path: Path) -> None:
+    s = load_settings(minimal(tmp_path, f"DEMO_ACCESS_CODE={CODE}\nRATE_LIMIT_PER_IP_HOUR=12\nDAILY_ITINERARY_CAP=300\n"))
+    assert s.demo_access_code is not None and s.demo_access_code.get_secret_value() == CODE
+    assert (s.rate_limit_per_ip_hour, s.daily_itinerary_cap) == (12, 300)
+    assert MARKER not in repr(s) and MARKER not in str(s)
+
+
+@pytest.mark.parametrize("code", ["short", "has space-" + MARKER, "ünicode-" + MARKER, "x" * 201])
+def test_demo_bad_code_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: str) -> None:
+    monkeypatch.setenv("DEMO_ACCESS_CODE", code)
+    exc = config_error(minimal(tmp_path))
+    assert "DEMO_ACCESS_CODE" in exc.message
+    assert MARKER not in exc.message and code not in exc.message
+
+
+@pytest.mark.parametrize(
+    ("line", "name"),
+    [
+        ("RATE_LIMIT_PER_IP_HOUR=0", "RATE_LIMIT_PER_IP_HOUR"),
+        ("RATE_LIMIT_PER_IP_HOUR=1001", "RATE_LIMIT_PER_IP_HOUR"),
+        ("RATE_LIMIT_PER_IP_HOUR=many", "RATE_LIMIT_PER_IP_HOUR"),
+        ("DAILY_ITINERARY_CAP=0", "DAILY_ITINERARY_CAP"),
+        ("DAILY_ITINERARY_CAP=10001", "DAILY_ITINERARY_CAP"),
+    ],
+)
+def test_demo_bad_limits(tmp_path: Path, line: str, name: str) -> None:
+    assert name in config_error(minimal(tmp_path, line + "\n")).message
+
+
+def test_demo_limit_bounds_accepted(tmp_path: Path) -> None:
+    s = load_settings(minimal(tmp_path, "RATE_LIMIT_PER_IP_HOUR=1000\nDAILY_ITINERARY_CAP=10000\n"))
+    assert (s.rate_limit_per_ip_hour, s.daily_itinerary_cap) == (1000, 10_000)
+    s = load_settings(minimal(tmp_path, "RATE_LIMIT_PER_IP_HOUR=1\nDAILY_ITINERARY_CAP=1\n"))
+    assert (s.rate_limit_per_ip_hour, s.daily_itinerary_cap) == (1, 1)

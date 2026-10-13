@@ -21,6 +21,10 @@ MAX_LLM_OUTPUT_CHARS = 20_000
 MAX_DETAIL_CHARS = 300
 EARTH_RADIUS_KM = 6371.0088
 DISCLAIMER = "Distances are straight-line (aerial), not walking or driving routes"
+WALKING_DISCLAIMER = "Walking distances and times are route estimates, check conditions on the ground"
+MIXED_DISCLAIMER = "Days marked walking use route estimates, other days use straight-line (aerial) distances"
+# a day route is downsampled to this many points to keep the response small
+MAX_ROUTE_POINTS = 400
 
 
 class Pace(StrEnum):
@@ -38,6 +42,11 @@ class Budget(StrEnum):
 class PlaceCategory(StrEnum):
     ATTRACTION = "attraction"
     RESTAURANT = "restaurant"
+
+
+class DistanceSource(StrEnum):
+    WALKING = "walking"
+    AERIAL = "aerial"
 
 
 # assumption: stop ceiling per day by pace, tune with real usage
@@ -82,6 +91,10 @@ Address = Annotated[
 ]
 # refs are p1..p30 only, no leading zeros
 Ref = Annotated[str, StringConstraints(pattern=r"^p([1-9]|[12][0-9]|30)$")]
+Lat = Annotated[float, Field(ge=-90, le=90)]
+Lon = Annotated[float, Field(ge=-180, le=180)]
+# lat, lon order, the order leaflet expects
+LatLon = tuple[Lat, Lon]
 
 
 class ItineraryValidationError(Exception):
@@ -195,7 +208,9 @@ class LLMItinerary(_LLMModel):
 class DayStop(_Model):
     order: int = Field(ge=1, le=MAX_STOPS_PER_DAY)
     place: Place
+    # walking km when the day is walking, aerial km otherwise
     leg_distance_km: float | None = Field(default=None, ge=0)
+    leg_walk_minutes: int | None = Field(default=None, ge=0)
 
 
 class DayPlan(_Model):
@@ -203,6 +218,27 @@ class DayPlan(_Model):
     theme: Theme
     stops: list[DayStop] = Field(min_length=1, max_length=MAX_STOPS_PER_DAY)
     total_distance_km: float = Field(ge=0)
+    distance_source: DistanceSource = DistanceSource.AERIAL
+    total_walk_minutes: int | None = Field(default=None, ge=0)
+    route_latlon: list[LatLon] = Field(default_factory=list, max_length=MAX_ROUTE_POINTS)
+
+    @model_validator(mode="after")
+    def _check_source(self) -> Self:
+        minutes = [s.leg_walk_minutes for s in self.stops[1:]]
+        if self.distance_source is DistanceSource.AERIAL:
+            # no invented walking time or path for a straight-line day
+            if self.route_latlon or self.total_walk_minutes is not None or any(
+                s.leg_walk_minutes is not None for s in self.stops
+            ):
+                raise ValueError("an aerial day has no walking route or minutes")
+            return self
+        if len(self.stops) < 2 or len(self.route_latlon) < 2:
+            raise ValueError("a walking day needs at least two stops and a route")
+        if self.stops[0].leg_walk_minutes is not None or None in minutes:
+            raise ValueError("a walking day needs minutes on every leg after the first stop")
+        if self.total_walk_minutes != sum(m for m in minutes if m is not None):
+            raise ValueError("total_walk_minutes must be the sum of the legs")
+        return self
 
 
 class Itinerary(_Model):
@@ -219,6 +255,15 @@ class Itinerary(_Model):
         if len(self.day_plans) != self.days:
             raise ValueError("day_plans must match days")
         return self
+
+
+def disclaimer_for(plans: list[DayPlan]) -> str:
+    sources = {p.distance_source for p in plans}
+    if sources == {DistanceSource.WALKING}:
+        return WALKING_DISCLAIMER
+    if DistanceSource.WALKING in sources:
+        return MIXED_DISCLAIMER
+    return DISCLAIMER
 
 
 def _safe_detail(exc: ValidationError) -> str:

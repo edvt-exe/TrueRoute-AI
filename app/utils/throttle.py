@@ -1,5 +1,5 @@
 import asyncio
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Hashable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -47,6 +47,38 @@ class Cooldown:
     @property
     def active(self) -> bool:
         return self._clock() < self._until
+
+
+class SlidingWindow:
+    def __init__(self, limit: int, window_s: float, clock: Clock) -> None:
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        if window_s <= 0:
+            raise ValueError("window_s must be positive")
+        self._limit = limit
+        self._window_s = window_s
+        self._clock = clock
+        self._hits: deque[float] = deque()
+
+    def _prune(self, now: float) -> None:
+        while self._hits and self._hits[0] <= now - self._window_s:
+            self._hits.popleft()
+
+    def try_acquire(self) -> bool:
+        # refuses instead of waiting, the caller decides what a refusal means
+        now = self._clock()
+        self._prune(now)
+        if len(self._hits) >= self._limit:
+            return False
+        self._hits.append(now)
+        return True
+
+    def retry_after(self) -> float:
+        now = self._clock()
+        self._prune(now)
+        if len(self._hits) < self._limit:
+            return 0.0
+        return self._hits[0] + self._window_s - now
 
 
 @dataclass

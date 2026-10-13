@@ -1,14 +1,16 @@
 import logging
 import re
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import SecretStr, ValidationError, field_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.services.geocoder import DEFAULT_BASE_URL as NOMINATIM_DEFAULT_URL
 from app.services.llm_agent import ALLOWED_EFFORTS, DEFAULT_EFFORT, DEFAULT_MODEL, is_model_id
 from app.services.overpass_client import DEFAULT_BASE_URL as OVERPASS_DEFAULT_URL
+from app.security import DEFAULT_DAILY_CAP, DEFAULT_PER_IP_HOUR, check_access_code
+from app.services.walking_routes import DEFAULT_BASE_URL as ORS_DEFAULT_URL
 from app.utils.http_guard import check_base_url, check_user_agent
 
 # anchored to the repo root so it works from any working directory
@@ -51,6 +53,14 @@ class Settings(BaseSettings):
     app_user_agent: str
     nominatim_base_url: str = NOMINATIM_DEFAULT_URL
     overpass_base_url: str = OVERPASS_DEFAULT_URL
+    # optional, without it every day uses aerial distances
+    ors_api_key: SecretStr | None = None
+    ors_base_url: str = ORS_DEFAULT_URL
+    # optional, when set the itinerary endpoint needs the X-Access-Code header
+    demo_access_code: SecretStr | None = None
+    # assumption: demo sized limits, the daily cap keeps llm and ors spend bounded
+    rate_limit_per_ip_hour: int = Field(default=DEFAULT_PER_IP_HOUR, ge=1, le=1000)
+    daily_itinerary_cap: int = Field(default=DEFAULT_DAILY_CAP, ge=1, le=10_000)
     log_level: LogLevel = "INFO"
 
     @field_validator("anthropic_api_key")
@@ -81,10 +91,42 @@ class Settings(BaseSettings):
         # sent to nominatim and overpass with every request
         return check_user_agent(_no_key(value))
 
-    @field_validator("nominatim_base_url", "overpass_base_url")
+    @field_validator("ors_api_key", "demo_access_code", mode="before")
+    @classmethod
+    def _blank_is_none(cls, value: object) -> object:
+        # the empty line from .env.example means the feature is off
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("ors_api_key")
+    @classmethod
+    def _check_ors_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        raw = value.get_secret_value()
+        if not raw.isprintable() or any(ch.isspace() for ch in raw):
+            raise ValueError("must not contain spaces or line breaks")
+        return value
+
+    @field_validator("demo_access_code")
+    @classmethod
+    def _check_access_code(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None:
+            check_access_code(value.get_secret_value())
+        return value
+
+    @field_validator("nominatim_base_url", "overpass_base_url", "ors_base_url")
     @classmethod
     def _check_url(cls, value: str) -> str:
         return check_base_url(_no_key(value))
+
+    @model_validator(mode="after")
+    def _ors_key_not_in_url(self) -> Self:
+        # the key belongs in the header only, a url ends up in logs and proxies
+        if self.ors_api_key is not None and self.ors_api_key.get_secret_value() in self.ors_base_url:
+            raise ValueError("ORS_BASE_URL must not contain the ORS key")
+        return self
 
     @field_validator("log_level", mode="before")
     @classmethod
