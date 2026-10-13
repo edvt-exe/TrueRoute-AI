@@ -95,6 +95,8 @@ Lat = Annotated[float, Field(ge=-90, le=90)]
 Lon = Annotated[float, Field(ge=-180, le=180)]
 # lat, lon order, the order leaflet expects
 LatLon = tuple[Lat, Lon]
+# which service drew a walking day, the response credits it
+RouteProvider = Literal["openrouteservice", "osrm"]
 
 
 class ItineraryValidationError(Exception):
@@ -221,19 +223,22 @@ class DayPlan(_Model):
     distance_source: DistanceSource = DistanceSource.AERIAL
     total_walk_minutes: int | None = Field(default=None, ge=0)
     route_latlon: list[LatLon] = Field(default_factory=list, max_length=MAX_ROUTE_POINTS)
+    route_provider: RouteProvider | None = None
 
     @model_validator(mode="after")
     def _check_source(self) -> Self:
         minutes = [s.leg_walk_minutes for s in self.stops[1:]]
         if self.distance_source is DistanceSource.AERIAL:
             # no invented walking time or path for a straight-line day
-            if self.route_latlon or self.total_walk_minutes is not None or any(
+            if self.route_latlon or self.route_provider is not None or self.total_walk_minutes is not None or any(
                 s.leg_walk_minutes is not None for s in self.stops
             ):
                 raise ValueError("an aerial day has no walking route or minutes")
             return self
         if len(self.stops) < 2 or len(self.route_latlon) < 2:
             raise ValueError("a walking day needs at least two stops and a route")
+        if self.route_provider is None:
+            raise ValueError("a walking day needs the provider that drew it")
         if self.stops[0].leg_walk_minutes is not None or None in minutes:
             raise ValueError("a walking day needs minutes on every leg after the first stop")
         if self.total_walk_minutes != sum(m for m in minutes if m is not None):

@@ -409,6 +409,7 @@ def walking_day(minutes: tuple[int, ...] = (12, 7), **overrides: object) -> dict
         "distance_source": "walking",
         "total_walk_minutes": sum(minutes),
         "route_latlon": [(0.0, 1.0), (0.0, 2.0), (0.0, 3.0)],
+        "route_provider": "openrouteservice",
     }
     return data | overrides
 
@@ -445,6 +446,10 @@ def test_aerial_day_rejects_route_alone() -> None:
     with pytest.raises(ValidationError, match="aerial day"):
         DayPlan.model_validate(data)
     data["route_latlon"] = []
+    # the provider alone is still walking data
+    with pytest.raises(ValidationError, match="aerial day"):
+        DayPlan.model_validate(data)
+    data["route_provider"] = None
     assert DayPlan.model_validate(data).distance_source is DistanceSource.AERIAL
 
 
@@ -502,3 +507,11 @@ def test_disclaimer_for() -> None:
     assert disclaimer_for([walking, walking]) == WALKING_DISCLAIMER
     assert disclaimer_for([walking, aerial]) == MIXED_DISCLAIMER
     assert "aerial" in MIXED_DISCLAIMER and "aerial" not in WALKING_DISCLAIMER
+
+
+def test_walking_day_needs_a_provider() -> None:
+    with pytest.raises(ValidationError, match="provider that drew it"):
+        DayPlan.model_validate(walking_day(route_provider=None))
+    assert DayPlan.model_validate(walking_day(route_provider="osrm")).route_provider == "osrm"
+    with pytest.raises(ValidationError):
+        DayPlan.model_validate(walking_day(route_provider="google"))

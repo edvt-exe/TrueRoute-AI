@@ -5,7 +5,7 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Protocol
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, SecretStr, ValidationError
@@ -30,6 +30,8 @@ DEFAULT_BASE_URL = "https://api.openrouteservice.org"
 PROFILE = "foot-walking"
 # ors terms: show this wherever ors results are displayed
 ORS_ATTRIBUTION = "© openrouteservice.org by HeiGIT | Map data © OpenStreetMap contributors"
+PROVIDER_ORS = "openrouteservice"
+PROVIDER_OSRM = "osrm"
 # ors free plan: 40 directions per minute, sliding
 PER_MINUTE_LIMIT = 40
 CALL_TIMEOUT_S = 10.0
@@ -54,7 +56,7 @@ SNAP_TOLERANCE_M = 700.0
 
 NonNeg = Annotated[FiniteFloat, Field(ge=0)]
 # geojson order is lon, lat, elevation is optional
-_Position = tuple[Lon, Lat] | tuple[Lon, Lat, float]
+Position = tuple[Lon, Lat] | tuple[Lon, Lat, float]
 
 StopKey = tuple[tuple[float, float], ...]
 WallClock = Callable[[], float]
@@ -83,7 +85,7 @@ class _Properties(_Ors):
 
 class _Geometry(_Ors):
     type: Literal["LineString"]
-    coordinates: list[_Position] = Field(min_length=2)
+    coordinates: list[Position] = Field(min_length=2)
 
 
 class _Feature(_Ors):
@@ -101,6 +103,12 @@ class DayRoute:
     # one (metres, seconds) pair per leg
     legs: tuple[tuple[float, float], ...]
     route_latlon: tuple[LatLon, ...]
+    provider: str = PROVIDER_ORS
+
+
+class FallbackRouter(Protocol):
+    # raises RouteError, the day then stays aerial
+    async def route(self, key: StopKey, deadline: float) -> DayRoute: ...
 
 
 def _stop_key(plan: DayPlan) -> StopKey:
@@ -141,7 +149,7 @@ def parse_route(body: bytes, stop_key: StopKey) -> DayRoute:
         raise RouteError("invalid_response")
     for (a, b), seg in zip(zip(stop_key, stop_key[1:]), segments, strict=True):
         # a walk clearly shorter than the straight line means the points were misread
-        if seg.distance + SNAP_TOLERANCE_M < _aerial_m(a, b):
+        if seg.distance + SNAP_TOLERANCE_M < aerial_m(a, b):
             raise RouteError("implausible_distance")
     latlon: list[LatLon] = [
         (round(p[1], ROUTE_DECIMALS), round(p[0], ROUTE_DECIMALS)) for p in coords
@@ -152,7 +160,7 @@ def parse_route(body: bytes, stop_key: StopKey) -> DayRoute:
     )
 
 
-def _aerial_m(a: tuple[float, float], b: tuple[float, float]) -> float:
+def aerial_m(a: tuple[float, float], b: tuple[float, float]) -> float:
     phi1, phi2 = math.radians(a[0]), math.radians(b[0])
     h = math.sin((phi2 - phi1) / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(
         math.radians(b[1] - a[1]) / 2
@@ -183,6 +191,7 @@ def apply_route(plan: DayPlan, route: DayRoute) -> DayPlan:
         distance_source=DistanceSource.WALKING,
         total_walk_minutes=total_min,
         route_latlon=list(route.route_latlon),
+        route_provider=route.provider,
     )
 
 
@@ -206,6 +215,7 @@ class WalkingRouter:
         max_cache_entries: int = MAX_CACHE_ENTRIES,
         clock: Clock = time.monotonic,
         wall_clock: WallClock = time.time,
+        fallback: FallbackRouter | None = None,
     ) -> None:
         if call_timeout_s <= 0 or budget_s <= 0 or cache_ttl_s <= 0:
             raise ValueError("timeouts and ttl must be positive")
@@ -227,23 +237,18 @@ class WalkingRouter:
         self._window = SlidingWindow(per_minute, 60.0, clock)
         self._cooldown = Cooldown(clock)
         self._cache: TTLCache[StopKey, DayRoute] = TTLCache(max_cache_entries, clock)
+        self._fallback = fallback
 
     @property
     def enabled(self) -> bool:
-        return self._key is not None
+        return self._key is not None or self._fallback is not None
 
     async def attach(self, itinerary: Itinerary) -> Itinerary:
         deadline = self._clock() + self._budget_s
         plans: list[DayPlan] = []
         reasons: list[str] = []
-        # a dead upstream should not cost a timeout per day
-        give_up = False
         for plan in itinerary.day_plans:
             if len(plan.stops) < 2:
-                plans.append(plan)
-                continue
-            if give_up:
-                reasons.append("skipped")
                 plans.append(plan)
                 continue
             try:
@@ -251,10 +256,6 @@ class WalkingRouter:
                 plans.append(apply_route(plan, route))
             except RouteError as exc:
                 reasons.append(exc.reason)
-                if exc.reason in OUTAGE_REASONS:
-                    give_up = True
-                    self._cooldown.trip(OUTAGE_COOLDOWN_S)
-                    logger.warning("ors unhealthy, walking routes paused %.0f s", OUTAGE_COOLDOWN_S)
                 plans.append(plan)
             except Exception as exc:
                 # routing must never fail the itinerary, type only, no values
@@ -271,6 +272,21 @@ class WalkingRouter:
         found, cached = self._cache.get(key)
         if found and cached is not None:
             return cached
+        try:
+            route = await self._ors(key, deadline)
+        except RouteError as exc:
+            if self._fallback is None:
+                raise
+            try:
+                route = await self._fallback.route(key, deadline)
+            except RouteError as fallback_exc:
+                raise RouteError(f"{exc.reason}+{fallback_exc.reason}") from None
+            logger.info("walking route from %s after ors %s", route.provider, exc.reason)
+        # only successes are cached, a failure is retried on the next request
+        self._cache.put(key, route, self._cache_ttl_s)
+        return route
+
+    async def _ors(self, key: StopKey, deadline: float) -> DayRoute:
         if self._key is None:
             raise RouteError("no_key")
         if self._cooldown.active:
@@ -287,11 +303,12 @@ class WalkingRouter:
             # a call cut short by our own budget says nothing about ors health
             if exc.reason == "timeout" and timeout_s < self._call_timeout_s:
                 raise RouteError("budget_timeout") from None
+            if exc.reason in OUTAGE_REASONS:
+                # a dead upstream should cost one wait, not one per day or per itinerary
+                self._cooldown.trip(OUTAGE_COOLDOWN_S)
+                logger.warning("ors unhealthy, walking routes paused %.0f s", OUTAGE_COOLDOWN_S)
             raise
-        route = parse_route(body, key)
-        # only successes are cached, a failure is retried on the next request
-        self._cache.put(key, route, self._cache_ttl_s)
-        return route
+        return parse_route(body, key)
 
     async def _post(self, key: StopKey, timeout_s: float) -> bytes:
         assert self._key is not None

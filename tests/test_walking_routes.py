@@ -812,7 +812,8 @@ def test_outage_pause_is_logged(log: pytest.LogCaptureFixture) -> None:
     run(timeout_responder, attach([1, 2], [3, 4]))
     messages = [r.getMessage() for r in log.records]
     assert "ors unhealthy, walking routes paused 120 s" in messages
-    assert reasons(log) == ["timeout", "skipped"]
+    # the next day hits the pause instead of waiting again
+    assert reasons(log) == ["timeout", "cooldown"]
 
 
 @pytest.mark.parametrize("code", [400, 404])
@@ -865,3 +866,119 @@ def test_outage_pause_never_shortens_a_quota_pause() -> None:
     _, rec, _ = run(respond, scenario)
     # the daily pause from the 403 still holds, so the second call never happens
     assert rec.calls == 1
+
+
+# osrm fallback
+
+
+class FakeFallback:
+    def __init__(self, reason: str | None = None) -> None:
+        self.reason = reason
+        self.keys: list[Any] = []
+
+    async def route(self, key: Any, deadline: float) -> DayRoute:
+        self.keys.append(key)
+        if self.reason is not None:
+            raise RouteError(self.reason)
+        latlon = tuple((lat, lon) for lat, lon in key)
+        legs = tuple((500.0, 400.0) for _ in key[1:])
+        return DayRoute(legs=legs, route_latlon=latlon, provider=walking_routes.PROVIDER_OSRM)
+
+
+def providers(it: Itinerary) -> list[str | None]:
+    return [p.route_provider for p in it.day_plans]
+
+
+@pytest.mark.parametrize("responder", [timeout_responder, connect_error, status(503), status(404), status(429)])
+def test_ors_failure_uses_the_fallback(responder: Responder, log: pytest.LogCaptureFixture) -> None:
+    fb = FakeFallback()
+    it, rec, _ = run(responder, attach([1, 2]), fallback=fb)
+    assert sources(it) == ["walking"]
+    assert providers(it) == ["osrm"]
+    assert rec.calls == 1 and len(fb.keys) == 1
+    assert it.day_plans[0].stops[1].leg_walk_minutes == 7
+    assert any(r.getMessage().startswith("walking route from osrm after ors ") for r in log.records)
+
+
+def test_no_ors_key_goes_straight_to_the_fallback() -> None:
+    fb = FakeFallback()
+    it, rec, _ = run(ok(), attach([1, 2], [3, 4]), key=None, fallback=fb)
+    assert rec.calls == 0
+    assert providers(it) == ["osrm", "osrm"]
+
+
+def test_ors_outage_pause_still_uses_the_fallback() -> None:
+    fb = FakeFallback()
+    it, rec, _ = run(status(503), attach([1, 2], [3, 4], [5, 6]), fallback=fb)
+    # ors is asked once, then paused, every day still gets a walking route
+    assert rec.calls == 1
+    assert providers(it) == ["osrm", "osrm", "osrm"]
+
+
+def test_ors_success_never_asks_the_fallback() -> None:
+    fb = FakeFallback()
+    it, _, _ = run(ok(), attach([1, 2]), fallback=fb)
+    assert providers(it) == ["openrouteservice"]
+    assert fb.keys == []
+
+
+def test_both_failing_stays_aerial_with_both_reasons(log: pytest.LogCaptureFixture) -> None:
+    fb = FakeFallback("osrm_http_400")
+    it, _, _ = run(status(404), attach([1, 2]), fallback=fb)
+    assert sources(it) == ["aerial"] and providers(it) == [None]
+    assert reasons(log) == ["http_404+osrm_http_400"]
+
+
+def test_fallback_routes_are_cached() -> None:
+    fb = FakeFallback()
+
+    async def scenario(router: WalkingRouter, clock: FakeClock) -> list[str | None]:
+        await router.attach(itinerary([1, 2]))
+        return providers(await router.attach(itinerary([1, 2])))
+
+    seen, rec, _ = run(status(404), scenario, fallback=fb)
+    assert seen == ["osrm"]
+    assert rec.calls == 1 and len(fb.keys) == 1
+
+
+def test_enabled_with_fallback_only() -> None:
+    async def scenario(router: WalkingRouter, clock: FakeClock) -> bool:
+        return router.enabled
+
+    assert run(ok(), scenario, key=None, fallback=FakeFallback())[0] is True
+
+
+def test_real_osrm_router_as_fallback() -> None:
+    from app.services.osrm_routes import OsrmRouter
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.openrouteservice.org":
+            return httpx.Response(503)
+        # osrm wants lon,lat pairs in the path
+        pairs = request.url.path.rsplit("/", 1)[1].split(";")
+        pts = [[float(v) for v in p.split(",")] for p in pairs]
+        legs = [{"distance": round(aerial_m(a, b) * 1.3, 1), "duration": 300.0} for a, b in zip(pts, pts[1:])]
+        body = {
+            "code": "Ok",
+            "routes": [{"legs": legs, "geometry": {"type": "LineString", "coordinates": pts}}],
+            "waypoints": [{"location": p, "distance": 5.0} for p in pts],
+        }
+        return httpx.Response(200, json=body)
+
+    clock = FakeClock()
+    rec = Recorder(respond)
+
+    async def main() -> Itinerary:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(rec)) as client:
+
+            async def no_wait(delay: float) -> None:
+                clock.now += delay
+
+            osrm = OsrmRouter(client, UA, clock=clock, sleep=no_wait)
+            router = WalkingRouter(client, SecretStr(KEY), UA, clock=clock, wall_clock=lambda: WALL, fallback=osrm)
+            return await router.attach(itinerary([1, 2, 3]))
+
+    it = asyncio.run(main())
+    assert providers(it) == ["osrm"]
+    assert [r.url.host for r in rec.requests] == ["api.openrouteservice.org", "routing.openstreetmap.de"]
+    assert it.disclaimer == WALKING_DISCLAIMER
