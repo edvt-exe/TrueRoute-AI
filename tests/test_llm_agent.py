@@ -469,3 +469,120 @@ def test_spec_values() -> None:
     assert ALLOWED_EFFORTS == ("low", "medium", "high")
     assert (MAX_TOKENS, MAX_ATTEMPTS) == (8000, 2)
     assert (ATTEMPT_TIMEOUT_S, SDK_MAX_RETRIES, TOTAL_TIMEOUT_S) == (60, 2, 150)
+
+# must-see landmarks
+
+
+# REQ is 2 days, so p1 and p2, the two best attractions, are the must-see places
+MISSES_P1 = {"days": [{"day": 1, "place_refs": ["p2", "p5"], "theme": "x"}, {"day": 2, "place_refs": ["p3", "p4"], "theme": "y"}]}
+MISSES_P2 = {"days": [{"day": 1, "place_refs": ["p1", "p5"], "theme": "x"}, {"day": 2, "place_refs": ["p3", "p4"], "theme": "y"}]}
+
+
+def refs_of(res: AgentResult) -> list[list[str]]:
+    return [[s.place.ref for s in d.stops] for d in res.itinerary.day_plans]
+
+
+def test_must_see_listed_in_prompt() -> None:
+    api = FakeAPI(message())
+    run(api)
+    user = api.body(0)["messages"][0]["content"]
+    assert '<must_see>\n["p1","p2"]\n</must_see>' in user
+    assert "Every ref in <must_see> must appear in the itinerary" in api.body(0)["system"]
+
+
+def test_plan_with_every_must_see_needs_one_call() -> None:
+    api = FakeAPI(message())
+    res = run(api)
+    assert isinstance(res, AgentResult)
+    assert api.calls == 1 and res.usage.attempts == 1
+
+
+def test_missing_must_see_retries_with_named_refs() -> None:
+    api = FakeAPI(message(MISSES_P1, request_id="req_a"), message(request_id="req_b"))
+    res = run(api)
+    assert isinstance(res, AgentResult)
+    assert api.calls == 2
+    feedback = api.body(1)["messages"][0]["content"][len(api.body(0)["messages"][0]["content"]) :]
+    assert "A previous answer left out these must-see refs: p1." in feedback
+    assert feedback.endswith("follow the rules and the schema exactly.")
+    assert "p1" in {r for day in refs_of(res) for r in day}
+    assert res.usage.attempts == 2 and res.usage.request_ids == ("req_a", "req_b")
+
+
+def test_still_missing_after_retry_is_accepted() -> None:
+    api = FakeAPI(message(MISSES_P1), message(MISSES_P1))
+    res = run(api)
+    # a must-see never turns a valid plan into an error
+    assert isinstance(res, AgentResult)
+    assert api.calls == 2
+    assert refs_of(res) == [["p2", "p5"], ["p3", "p4"]]
+
+
+def test_tie_keeps_the_later_answer() -> None:
+    api = FakeAPI(message(MISSES_P1), message(MISSES_P2))
+    res = run(api)
+    assert isinstance(res, AgentResult)
+    assert refs_of(res) == [["p1", "p5"], ["p3", "p4"]]
+
+
+def test_fewer_misses_wins() -> None:
+    cands = PlaceCandidates(center=CENTER, radius_m=7718, places=list(CANDS.places) + [
+        Place(ref="p6", osm_type="node", osm_id=6, name="Place 6", category=PlaceCategory.ATTRACTION, coords=Coordinates(lat=44.44, lon=26.1)),
+        Place(ref="p7", osm_type="node", osm_id=7, name="Place 7", category=PlaceCategory.ATTRACTION, coords=Coordinates(lat=44.45, lon=26.1)),
+    ])
+    misses_one = {"days": [{"day": 1, "place_refs": ["p1", "p5"], "theme": "x"}, {"day": 2, "place_refs": ["p3", "p4"], "theme": "y"}]}
+    misses_two = {"days": [{"day": 1, "place_refs": ["p6", "p5"], "theme": "x"}, {"day": 2, "place_refs": ["p3", "p7"], "theme": "y"}]}
+    api = FakeAPI(message(misses_one), message(misses_two))
+    # relaxed pace needs 2 stops a day, moderate would need 3 with 7 places
+    res = run(api, request=UserRequest(city="Bucharest", days=2, pace="relaxed"), cands=cands)
+    assert isinstance(res, AgentResult)
+    assert refs_of(res) == [["p1", "p5"], ["p3", "p4"]]
+
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        message("not json"),
+        message("I can't help.", stop="refusal"),
+        message(MISSES_P1, stop="max_tokens"),
+        api_error(500, "api_error"),
+        api_error(429, "rate_limit_error"),
+    ],
+)
+def test_failed_retry_keeps_the_first_valid_plan(second: httpx2.Response) -> None:
+    api = FakeAPI(message(MISSES_P1), second)
+    res = run(api, sdk_max_retries=0)
+    assert isinstance(res, AgentResult)
+    assert refs_of(res) == [["p2", "p5"], ["p3", "p4"]]
+    assert res.usage.attempts == 2
+
+
+def test_timeout_on_retry_keeps_the_first_valid_plan() -> None:
+    async def slow(request: httpx2.Request) -> httpx2.Response:
+        await asyncio.sleep(5)
+        return message()
+
+    api = FakeAPI(message(MISSES_P1), slow)
+    res = run(api, total_timeout_s=0.3, sdk_max_retries=0)
+    assert isinstance(res, AgentResult)
+    assert refs_of(res) == [["p2", "p5"], ["p3", "p4"]]
+
+
+def test_config_error_on_retry_still_fails() -> None:
+    api = FakeAPI(message(MISSES_P1), api_error(401, "authentication_error"))
+    res = run(api, sdk_max_retries=0)
+    assert isinstance(res, LLMConfigError)
+
+
+def test_invalid_first_answer_still_fails_without_a_valid_plan() -> None:
+    api = FakeAPI(message("nope"), message("I can't help.", stop="refusal"))
+    assert isinstance(run(api), LLMRefusedError)
+
+
+def test_must_see_log_has_counts_only(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="app.services.llm_agent")
+    run(FakeAPI(message(MISSES_P1), message(MISSES_P1)))
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "llm attempt 1 left out 1 of 2 must-see places" in text
+    assert "llm plan accepted without every must-see place" in text
+    assert "Place 1" not in text

@@ -30,6 +30,8 @@ MIN_STOPS_BY_PACE: dict[Pace, int] = {
 MAX_USER_PROMPT_CHARS = 50_000
 # structured outputs docs: at most 24 optional properties per request
 MAX_OPTIONAL_PROPERTIES = 24
+# assumption: one headline landmark per trip day, a paris test without it dropped the eiffel tower
+MUST_SEE_PER_DAY = 1
 
 # keywords the structured outputs docs list as supported, anything else is a 400
 # live check: maxItems on arrays is rejected, so stop limits use fixed slots instead
@@ -45,6 +47,8 @@ Rules:
 - Each day has numbered stop slots s1, s2 and so on. Fill them in visiting order starting at s1.
   The required slots are the minimum for the day, add an optional slot only when it fits the route.
 - Each place has a rank within its category, computed by code from how notable it is. Rank 1 is the most notable.
+- Every ref in <must_see> must appear in the itinerary. They are the city's most notable attractions,
+  put each one in the day where it fits the route best.
 - Unless the interests clearly point elsewhere, build the days around the top ranked attractions and spread them
   across the days, so a short trip still sees the city's best known landmarks.
 - Within each day, keep the stops close together using the lat and lon values, and order them as a sensible walking route.
@@ -93,6 +97,12 @@ def _dump(value: Any) -> str:
     return text.replace("<", "\\u003c").replace(">", "\\u003e")
 
 
+def must_see_refs(request: UserRequest, candidates: PlaceCandidates) -> list[str]:
+    # overpass_client lists attractions best first, so the first ones are the headline landmarks
+    attractions = [p.ref for p in candidates.places if p.category is PlaceCategory.ATTRACTION]
+    return attractions[: request.days * MUST_SEE_PER_DAY]
+
+
 def build_user_prompt(request: UserRequest, candidates: PlaceCandidates) -> str:
     layout = slot_layout(request, candidates)
     lines = [
@@ -131,6 +141,9 @@ def build_user_prompt(request: UserRequest, candidates: PlaceCandidates) -> str:
         )
     lines += [
         "</places>",
+        "<must_see>",
+        _dump(must_see_refs(request, candidates)),
+        "</must_see>",
         f"Plan {layout.days} day(s) with {layout.required} to {layout.total} stops per day.",
     ]
     prompt = "\n".join(lines)

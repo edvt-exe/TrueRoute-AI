@@ -763,3 +763,105 @@ def test_enabled_flag() -> None:
 
     assert run(ok(), scenario)[0] is True
     assert run(ok(), scenario, key=None)[0] is False
+
+# outage cooldown
+
+
+def timeout_responder(request: httpx.Request) -> httpx.Response:
+    raise httpx.ReadTimeout("slow", request=request)
+
+
+def connect_error(request: httpx.Request) -> httpx.Response:
+    raise httpx.ConnectError("down", request=request)
+
+
+@pytest.mark.parametrize("responder", [timeout_responder, connect_error, status(503), status(500)])
+def test_outage_pauses_ors_across_requests(responder: Responder) -> None:
+    async def scenario(router: WalkingRouter, clock: FakeClock) -> list[str]:
+        out = sources(await router.attach(itinerary([1, 2])))
+        # a later itinerary inside the pause skips ors without waiting
+        clock.now += walking_routes.OUTAGE_COOLDOWN_S - 1
+        out += sources(await router.attach(itinerary([3, 4])))
+        return out
+
+    seen, rec, _ = run(responder, scenario)
+    assert seen == ["aerial", "aerial"]
+    assert rec.calls == 1
+
+
+def test_ors_is_tried_again_after_the_pause() -> None:
+    calls = {"n": 0}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ReadTimeout("slow", request=request)
+        return ok()(request)  # type: ignore[return-value]
+
+    async def scenario(router: WalkingRouter, clock: FakeClock) -> list[str]:
+        await router.attach(itinerary([1, 2]))
+        clock.now += walking_routes.OUTAGE_COOLDOWN_S
+        return sources(await router.attach(itinerary([1, 2])))
+
+    seen, rec, _ = run(respond, scenario)
+    assert seen == ["walking"]
+    assert rec.calls == 2
+
+
+def test_outage_pause_is_logged(log: pytest.LogCaptureFixture) -> None:
+    run(timeout_responder, attach([1, 2], [3, 4]))
+    messages = [r.getMessage() for r in log.records]
+    assert "ors unhealthy, walking routes paused 120 s" in messages
+    assert reasons(log) == ["timeout", "skipped"]
+
+
+@pytest.mark.parametrize("code", [400, 404])
+def test_client_errors_do_not_pause(code: int) -> None:
+    async def scenario(router: WalkingRouter, clock: FakeClock) -> int:
+        await router.attach(itinerary([1, 2]))
+        await router.attach(itinerary([3, 4]))
+        return 0
+
+    _, rec, _ = run(status(code), scenario)
+    assert rec.calls == 2
+
+
+def test_budget_cut_call_does_not_pause(log: pytest.LogCaptureFixture) -> None:
+    calls = {"n": 0}
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            await asyncio.sleep(1.0)
+        return ok()(request)  # type: ignore[return-value]
+
+    async def scenario(router: WalkingRouter, clock: FakeClock) -> list[str]:
+        first = sources(await router.attach(itinerary([1, 2])))
+        router._budget_s = BUDGET_S
+        return first + sources(await router.attach(itinerary([3, 4])))
+
+    seen, rec, _ = run(respond, scenario, budget_s=0.05)
+    # our own short budget cut the first call, ors was fine, so no pause
+    assert seen == ["aerial", "walking"]
+    assert rec.calls == 2
+    assert "budget_timeout" in reasons(log)
+    assert not any("paused" in r.getMessage() for r in log.records)
+
+
+def test_outage_pause_never_shortens_a_quota_pause() -> None:
+    calls = {"n": 0}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(403)
+        raise httpx.ReadTimeout("slow", request=request)
+
+    async def scenario(router: WalkingRouter, clock: FakeClock) -> None:
+        await router.attach(itinerary([1, 2]))
+        clock.now += walking_routes.OUTAGE_COOLDOWN_S + 1
+        await router.attach(itinerary([3, 4]))
+
+    _, rec, _ = run(respond, scenario)
+    # the daily pause from the 403 still holds, so the second call never happens
+    assert rec.calls == 1

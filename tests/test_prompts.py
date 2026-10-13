@@ -17,6 +17,8 @@ from app.schemas import (
     UserRequest,
 )
 from app.utils.prompts import (
+    MUST_SEE_PER_DAY,
+    must_see_refs,
     MAX_OPTIONAL_PROPERTIES,
     MAX_USER_PROMPT_CHARS,
     MIN_STOPS_BY_PACE,
@@ -473,3 +475,28 @@ def test_rank_is_the_only_new_field() -> None:
     row = ranked_rows(candidates(1))[0]
     assert set(row) == {"ref", "name", "category", "rank", "lat", "lon", "km_from_center"}
     assert isinstance(row["rank"], int)
+
+
+# must-see landmarks
+
+
+def test_must_see_is_one_top_attraction_per_day() -> None:
+    assert MUST_SEE_PER_DAY == 1
+    places = [place(1, category=PlaceCategory.RESTAURANT), place(2), place(3), place(4), place(5)]
+    cands = PlaceCandidates(center=CENTER, radius_m=5000, places=places)
+    assert must_see_refs(request(days=2), cands) == ["p2", "p3"]
+    assert must_see_refs(request(days=1), cands) == ["p2"]
+    # never more than the attractions there are
+    assert must_see_refs(request(days=7), cands) == ["p2", "p3", "p4", "p5"]
+
+
+def test_must_see_section_in_prompt() -> None:
+    prompt = build_user_prompt(request(days=2), candidates(5))
+    assert section(prompt, "must_see") == ['["p1","p2"]']
+    assert prompt.index("</places>") < prompt.index("<must_see>") < prompt.index("Plan 2 day(s)")
+
+
+def test_must_see_rule_in_system_prompt() -> None:
+    text = build_system_prompt()
+    assert "Every ref in <must_see> must appear in the itinerary" in text
+    assert text.index("<must_see> must appear") < text.index("Within each day")

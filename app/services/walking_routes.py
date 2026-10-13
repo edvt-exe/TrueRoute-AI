@@ -37,6 +37,11 @@ CONNECT_TIMEOUT_S = 5.0
 # all days of one request together, later days fall back to aerial
 BUDGET_S = 20.0
 MINUTE_COOLDOWN_S = 60.0
+# assumption: after a timeout, network error or 5xx, skip ors for a while so an outage
+# costs one wait, not one per itinerary, a live outage hung every call for 30 s
+OUTAGE_COOLDOWN_S = 120.0
+# these mean ors itself is unhealthy, a short budget or a bad point is not an outage
+OUTAGE_REASONS = ("timeout", "network", "server_error")
 DAY_S = 86_400.0
 CACHE_TTL_S = 24 * 3600.0
 MAX_CACHE_ENTRIES = 256
@@ -246,7 +251,10 @@ class WalkingRouter:
                 plans.append(apply_route(plan, route))
             except RouteError as exc:
                 reasons.append(exc.reason)
-                give_up = exc.reason in ("timeout", "network", "server_error")
+                if exc.reason in OUTAGE_REASONS:
+                    give_up = True
+                    self._cooldown.trip(OUTAGE_COOLDOWN_S)
+                    logger.warning("ors unhealthy, walking routes paused %.0f s", OUTAGE_COOLDOWN_S)
                 plans.append(plan)
             except Exception as exc:
                 # routing must never fail the itinerary, type only, no values
@@ -272,7 +280,14 @@ class WalkingRouter:
             raise RouteError("budget")
         if not self._window.try_acquire():
             raise RouteError("rate_window")
-        body = await self._post(key, min(self._call_timeout_s, remaining))
+        timeout_s = min(self._call_timeout_s, remaining)
+        try:
+            body = await self._post(key, timeout_s)
+        except RouteError as exc:
+            # a call cut short by our own budget says nothing about ors health
+            if exc.reason == "timeout" and timeout_s < self._call_timeout_s:
+                raise RouteError("budget_timeout") from None
+            raise
         route = parse_route(body, key)
         # only successes are cached, a failure is retried on the next request
         self._cache.put(key, route, self._cache_ttl_s)

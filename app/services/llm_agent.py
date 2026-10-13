@@ -19,6 +19,7 @@ from app.utils.prompts import (
     build_output_schema,
     build_system_prompt,
     build_user_prompt,
+    must_see_refs,
     parse_slot_answer,
     slot_layout,
 )
@@ -107,6 +108,19 @@ def _feedback(exc: ItineraryValidationError) -> str:
     )
 
 
+def _must_see_feedback(missing: list[str]) -> str:
+    # refs come from code, never from the model output
+    return (
+        f"\n\nA previous answer left out these must-see refs: {', '.join(missing)}. "
+        "Include every ref in <must_see> and follow the rules and the schema exactly."
+    )
+
+
+def missing_must_see(itinerary: Itinerary, must_see: list[str]) -> list[str]:
+    used = {stop.place.ref for day in itinerary.day_plans for stop in day.stops}
+    return [ref for ref in must_see if ref not in used]
+
+
 class LLMAgent:
     def __init__(
         self,
@@ -142,15 +156,37 @@ class LLMAgent:
         user = build_user_prompt(request, candidates)
         schema = build_output_schema(request, candidates)
         layout = slot_layout(request, candidates)
+        must_see = must_see_refs(request, candidates)
         start = self._clock()
         input_tokens = 0
         output_tokens = 0
         request_ids: list[str] = []
         feedback = ""
+        attempts = 0
+        # a valid plan that misses a must-see is kept, a must-see never fails a request
+        best: tuple[Itinerary, int] | None = None
+
+        def result(itinerary: Itinerary) -> AgentResult:
+            usage = AgentUsage(
+                model=self._model,
+                attempts=attempts,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_s=round(self._clock() - start, 3),
+                request_ids=tuple(request_ids),
+            )
+            return AgentResult(itinerary=itinerary, usage=usage)
+
         try:
             async with asyncio.timeout(self._total_timeout_s):
                 for attempt in range(1, MAX_ATTEMPTS + 1):
-                    message = await self._call(system, user + feedback, schema)
+                    attempts = attempt
+                    try:
+                        message = await self._call(system, user + feedback, schema)
+                    except LLMUnavailableError:
+                        if best is None:
+                            raise
+                        break
                     input_tokens += message.usage.input_tokens
                     output_tokens += message.usage.output_tokens
                     if message._request_id:
@@ -164,25 +200,33 @@ class LLMAgent:
                         message.usage.output_tokens,
                         message._request_id,
                     )
-                    text = _answer_text(message)
+                    try:
+                        text = _answer_text(message)
+                    except (LLMRefusedError, LLMTruncatedError, LLMInvalidOutputError):
+                        if best is None:
+                            raise
+                        break
                     try:
                         itinerary = resolve(parse_slot_answer(text, layout), candidates, request)
                     except ItineraryValidationError as exc:
                         logger.warning("llm attempt %d rejected: %s", attempt, exc.message)
                         feedback = _feedback(exc)
                         continue
-                    usage = AgentUsage(
-                        model=self._model,
-                        attempts=attempt,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        latency_s=round(self._clock() - start, 3),
-                        request_ids=tuple(request_ids),
-                    )
-                    return AgentResult(itinerary=itinerary, usage=usage)
+                    missing = missing_must_see(itinerary, must_see)
+                    if not missing:
+                        return result(itinerary)
+                    logger.warning("llm attempt %d left out %d of %d must-see places", attempt, len(missing), len(must_see))
+                    # fewer misses wins, the later answer wins a tie
+                    if best is None or len(missing) <= best[1]:
+                        best = (itinerary, len(missing))
+                    feedback = _must_see_feedback(missing)
         except TimeoutError:
-            logger.warning("llm timed out after %.0f s", self._total_timeout_s)
-            raise LLMUnavailableError("model timed out") from None
+            if best is None:
+                logger.warning("llm timed out after %.0f s", self._total_timeout_s)
+                raise LLMUnavailableError("model timed out") from None
+        if best is not None:
+            logger.info("llm plan accepted without every must-see place")
+            return result(best[0])
         raise LLMInvalidOutputError("model output failed validation twice")
 
     async def _call(self, system: str, user: str, schema: dict[str, Any]) -> Any:
