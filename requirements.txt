@@ -1,2 +1,7 @@
 pydantic>=2.14,<3
+pydantic-settings>=2.15,<3
 httpx>=0.28.1,<0.29
+anthropic>=1.13,<2
+fastapi>=0.143,<1
+starlette>=1.7,<2
+uvicorn>=0.54,<1

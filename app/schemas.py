@@ -223,10 +223,11 @@ class Itinerary(_Model):
 
 def _safe_detail(exc: ValidationError) -> str:
     # loc and msg only, never the input value
-    parts = [
-        f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}"
-        for err in exc.errors(include_input=False, include_url=False, include_context=False)
-    ]
+    parts = []
+    for err in exc.errors(include_input=False, include_url=False, include_context=False):
+        loc = ".".join(str(p) for p in err["loc"])
+        # a whole-document error such as broken json has no field path
+        parts.append(f"{loc}: {err['msg']}" if loc else err["msg"])
     return "; ".join(parts)
 
 
@@ -267,7 +268,6 @@ def resolve(llm: LLMItinerary, candidates: PlaceCandidates, request: UserRequest
         plans.append(
             DayPlan(day=day.day, theme=day.theme, stops=stops, total_distance_km=total)
         )
-        
     return Itinerary(
         city=request.city,
         days=request.days,

@@ -296,6 +296,15 @@ def test_llm_error_detail_is_bounded() -> None:
     assert len(info.value.detail) == MAX_DETAIL_CHARS
 
 
+def test_llm_error_detail_format() -> None:
+    with pytest.raises(ItineraryValidationError) as info:
+        parse_llm_output("not json")
+    assert info.value.detail.startswith("Invalid JSON")
+    with pytest.raises(ItineraryValidationError) as info:
+        parse_llm_output(llm_raw([(1, ["p1"], "")]))
+    assert info.value.detail.startswith("days.0.theme: ")
+
+
 def test_error_exposes_message_and_detail() -> None:
     err = ItineraryValidationError("boom", "x" * 1000)
     assert str(err) == "boom"
