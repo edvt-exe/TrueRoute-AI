@@ -1,0 +1,20 @@
+# local postgres for development only, reachable from this machine alone
+# start: set POSTGRES_PASSWORD in your shell, then docker compose up -d
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: trueroute
+      POSTGRES_DB: trueroute
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your shell first}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trueroute -d trueroute"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  pgdata:

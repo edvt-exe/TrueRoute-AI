@@ -6,6 +6,7 @@ from typing import Literal, Self
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.db.engine import check_database_url
 from app.services.geocoder import DEFAULT_BASE_URL as NOMINATIM_DEFAULT_URL
 from app.services.llm_agent import ALLOWED_EFFORTS, DEFAULT_EFFORT, DEFAULT_MODEL, is_model_id
 from app.services.overpass_client import DEFAULT_BASE_URL as OVERPASS_DEFAULT_URL
@@ -66,6 +67,8 @@ class Settings(BaseSettings):
     rate_limit_per_ip_hour: int = Field(default=DEFAULT_PER_IP_HOUR, ge=1, le=1000)
     daily_itinerary_cap: int = Field(default=DEFAULT_DAILY_CAP, ge=1, le=10_000)
     log_level: LogLevel = "INFO"
+    # optional until accounts ship, it holds the database password
+    database_url: SecretStr | None = None
 
     @field_validator("anthropic_api_key")
     @classmethod
@@ -95,7 +98,7 @@ class Settings(BaseSettings):
         # sent to nominatim and overpass with every request
         return check_user_agent(_no_key(value))
 
-    @field_validator("ors_api_key", "demo_access_code", mode="before")
+    @field_validator("ors_api_key", "demo_access_code", "database_url", mode="before")
     @classmethod
     def _blank_is_none(cls, value: object) -> object:
         # the empty line from .env.example means the feature is off
@@ -118,6 +121,13 @@ class Settings(BaseSettings):
     def _check_access_code(cls, value: SecretStr | None) -> SecretStr | None:
         if value is not None:
             check_access_code(value.get_secret_value())
+        return value
+
+    @field_validator("database_url")
+    @classmethod
+    def _check_database_url(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None:
+            check_database_url(value.get_secret_value())
         return value
 
     @field_validator("nominatim_base_url", "overpass_base_url", "ors_base_url", "osrm_base_url")

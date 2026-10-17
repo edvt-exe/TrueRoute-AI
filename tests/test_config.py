@@ -36,6 +36,7 @@ NAMES = (
     "RATE_LIMIT_PER_IP_HOUR",
     "DAILY_ITINERARY_CAP",
     "LOG_LEVEL",
+    "DATABASE_URL",
 )
 
 
