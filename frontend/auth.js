@@ -28,6 +28,7 @@ const MESSAGES = {
   password_breached: "This password appears in known data breaches. Choose a different one.",
   invalid_code: "That code is wrong or has expired.",
   rate_limited: "Too many attempts. Wait a few minutes and try again.",
+  cross_site_request: "This request came from another site and was blocked. Open TrueRoute directly and try again.",
   invalid_request: "Some fields are not valid.",
   not_available: "Accounts are not available yet.",
   network: "Could not reach the server. Check your connection.",

@@ -27,6 +27,7 @@ const MESSAGES = {
   access_denied: "Enter the access code for this demo.",
   rate_limited: "You have planned a lot in the last hour.",
   daily_cap_reached: "The demo has used up today's plans.",
+  cross_site_request: "This request came from another site and was blocked. Open TrueRoute directly and try again.",
   network: "Could not reach the server. Check your connection and try again.",
   client_timeout: "No answer from the server. Try again in a moment.",
 };

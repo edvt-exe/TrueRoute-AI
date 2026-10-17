@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import Settings, configure_logging, load_settings
-from app.security import ACCESS_HEADER, DemoGuard, Refusal, security_headers
+from app.security import ACCESS_HEADER, DemoGuard, Refusal, is_cross_site, security_headers
 from app.schemas import DistanceSource, GeocodeResult, Itinerary, PlaceCandidates, UserRequest
 from app.services.geocoder import CityNotFoundError, Geocoder, GeocoderError, GeocoderUnavailableError
 from app.services.llm_agent import (
@@ -263,6 +263,14 @@ def create_app(
     app.add_exception_handler(RequestValidationError, _validation_error)
     app.add_exception_handler(StarletteHTTPException, _http_error)
     app.add_exception_handler(Exception, _unexpected_error)
+
+    @app.middleware("http")
+    async def refuse_cross_site(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        # a session cookie alone never authorises a state change from another site
+        if request.url.path.startswith("/api/") and is_cross_site(request.method, request.headers):
+            logger.warning("cross-site %s refused", request.method)
+            return _error(403, "cross_site_request", "cross-site requests are not allowed")
+        return await call_next(request)
 
     @app.middleware("http")
     async def limit_body(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:

@@ -3,7 +3,9 @@ import ipaddress
 import logging
 import math
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from pydantic import SecretStr
 
@@ -63,6 +65,28 @@ class Refusal:
 
 
 DENIED = Refusal(401, "access_denied", "a valid access code is required")
+
+
+# methods that change state, another site can make the browser send these with our cookies
+UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# fetch metadata values that mean the request came from this site or the user typed the address
+SAME_SITE_FETCH = frozenset({"same-origin", "none"})
+
+
+def is_cross_site(method: str, headers: Mapping[str, str]) -> bool:
+    # csrf defence, header names must be lowercase as starlette provides them
+    if method.upper() not in UNSAFE_METHODS:
+        return False
+    # every current browser sends this and a page cannot forge it
+    site = headers.get("sec-fetch-site")
+    if site is not None:
+        return site not in SAME_SITE_FETCH
+    # older browsers: the origin must name this host
+    origin = headers.get("origin")
+    if origin is None:
+        # browsers send one of the two on cross-site posts, scripts and curl carry no victim cookies
+        return False
+    return origin == "null" or urlsplit(origin).netloc.lower() != headers.get("host", "").lower()
 
 
 def check_access_code(value: str) -> str:
