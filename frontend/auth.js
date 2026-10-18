@@ -8,7 +8,7 @@ const MIN_CLASSES = 4;
 const MIN_PERSONAL = 3;
 const USERNAME_PATTERN = /^[A-Za-z0-9_]{3,32}$/;
 const OTP_PATTERN = /^[0-9]{6}$/;
-// planned routes, until they exist every call answers 404 and the page says so
+// account routes in app/auth/routes.py
 const ENDPOINTS = {
   signin: "/api/auth/signin",
   signup: "/api/auth/signup",
@@ -38,6 +38,8 @@ const MESSAGES = {
   cross_site_request: "This request came from another site and was blocked. Open TrueRoute directly and try again.",
   invalid_request: "Some fields are not valid.",
   not_available: "Accounts are not available yet.",
+  accounts_unavailable: "Accounts are not switched on for this server.",
+  not_signed_in: "Your session ended. Sign in again.",
   network: "Could not reach the server. Check your connection.",
   client_timeout: "The server took too long to answer. Try again.",
   internal_error: "Something went wrong. Try again.",
@@ -356,8 +358,14 @@ async function onResend() {
   setBusy(true);
   try {
     const result = await postJson(ENDPOINTS.resend, { challenge_id: state.challengeId });
-    if (result.ok) setStatus("otp-status", "A new code is on its way. Older codes no longer work.");
-    else setStatus("otp-status", errorMessage(result), true);
+    if (result.ok && validChallenge(result.data)) {
+      // the new code belongs to a new challenge, the old one is retired
+      state.challengeId = result.data.challenge_id;
+      $("otp-code").value = "";
+      setStatus("otp-status", "A new code is on its way. Older codes no longer work.");
+    } else {
+      setStatus("otp-status", errorMessage(result), true);
+    }
   } finally {
     setBusy(false);
   }

@@ -151,10 +151,11 @@ def test_only_the_auth_page_allows_turnstile() -> None:
 def test_turnstile_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     for name in ("TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY"):
         monkeypatch.delenv(name, raising=False)
-    pair = f"TURNSTILE_SITE_KEY=1x00000000000000000000AA\nTURNSTILE_SECRET_KEY={SECRET}\n"
+    others = f"DATABASE_URL=postgresql+asyncpg://u:p@localhost/db\nOTP_HMAC_KEY={'k' * 40}\n"
+    pair = f"TURNSTILE_SITE_KEY=1x00000000000000000000AA\nTURNSTILE_SECRET_KEY={SECRET}\n{others}"
     settings = load_settings(minimal(tmp_path, pair))
     assert settings.turnstile_site_key == "1x00000000000000000000AA"
     assert SECRET not in repr(settings)
     with pytest.raises(ConfigError) as exc:
-        load_settings(minimal(tmp_path, f"TURNSTILE_SECRET_KEY={SECRET}\n"))
+        load_settings(minimal(tmp_path, f"TURNSTILE_SECRET_KEY={SECRET}\n{others}"))
     assert "must be set together" in exc.value.message and SECRET not in exc.value.message

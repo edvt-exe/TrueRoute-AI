@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -15,8 +15,14 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.auth.captcha import TEST_SECRETS
+from app.auth.breach import BreachChecker
+from app.auth.captcha import TEST_SECRETS, CaptchaVerifier
+from app.auth.email import ConsoleEmailSender
+from app.auth.passwords import Passwords
+from app.auth.routes import AuthServices
+from app.auth.routes import router as auth_router
 from app.config import Settings, configure_logging, load_settings
+from app.db.engine import make_engine, make_sessions
 from app.security import ACCESS_HEADER, DemoGuard, Refusal, is_cross_site, security_headers
 from app.schemas import DistanceSource, GeocodeResult, Itinerary, PlaceCandidates, UserRequest
 from app.services.geocoder import CityNotFoundError, Geocoder, GeocoderError, GeocoderUnavailableError
@@ -189,7 +195,12 @@ async def _validation_error(request: Request, exc: Exception) -> JSONResponse:
 
 async def _http_error(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, StarletteHTTPException)
-    return _error(exc.status_code, f"http_{exc.status_code}", str(exc.detail))
+    # account errors carry their own code, everything else is named after its status
+    code = getattr(exc, "code", None) or f"http_{exc.status_code}"
+    response = _error(exc.status_code, code, str(exc.detail))
+    for name, value in (exc.headers or {}).items():
+        response.headers[name] = value
+    return response
 
 
 async def _unexpected_error(request: Request, exc: Exception) -> JSONResponse:
@@ -198,15 +209,30 @@ async def _unexpected_error(request: Request, exc: Exception) -> JSONResponse:
     return _error(500, "internal_error", "internal server error")
 
 
+AuthFactory = Callable[[], AbstractAsyncContextManager[AuthServices]]
+
+
+def _attach_auth(app: FastAPI, auth: AuthServices) -> None:
+    app.state.auth = auth
+    # read by the current_user dependency
+    app.state.db_sessions = auth.db
+    app.state.clock = auth.clock
+
+
 def _build_lifespan(
-    settings: Settings | None, services: Services | None, guard: DemoGuard | None
+    settings: Settings | None, services: Services | None, guard: DemoGuard | None, auth_factory: AuthFactory | None
 ) -> Callable[[FastAPI], AsyncIterator[None]]:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if services is not None:
             app.state.services = services
             app.state.guard = guard
-            yield
+            if auth_factory is None:
+                yield
+                return
+            async with auth_factory() as auth:
+                _attach_auth(app, auth)
+                yield
             return
         # a bad .env stops startup here with a safe ConfigError
         cfg = settings or load_settings()
@@ -220,6 +246,20 @@ def _build_lifespan(
             httpx.AsyncClient() as http,
             anthropic.AsyncAnthropic(api_key=cfg.anthropic_api_key.get_secret_value()) as llm,
         ):
+            engine = make_engine(cfg.database_url.get_secret_value()) if cfg.database_url is not None else None
+            if engine is not None and cfg.turnstile_secret_key is not None and cfg.otp_hmac_key is not None:
+                _attach_auth(
+                    app,
+                    AuthServices(
+                        db=make_sessions(engine),
+                        passwords=Passwords(),
+                        breach=BreachChecker(http, cfg.app_user_agent),
+                        captcha=CaptchaVerifier(http, cfg.turnstile_secret_key),
+                        email=ConsoleEmailSender(),
+                        otp_key=cfg.otp_hmac_key.get_secret_value().encode(),
+                    ),
+                )
+                logger.warning("account emails are printed to this console, not sent, connect an email provider before going public")
             app.state.services = Services(
                 geocoder=Geocoder(http, cfg.app_user_agent, cfg.nominatim_base_url),
                 places=OverpassClient(http, cfg.app_user_agent, cfg.overpass_base_url),
@@ -242,7 +282,12 @@ def _build_lifespan(
                 cfg.rate_limit_per_ip_hour,
                 cfg.daily_itinerary_cap,
             )
-            yield
+            logger.info("accounts %s", "on" if engine is not None else "off")
+            try:
+                yield
+            finally:
+                if engine is not None:
+                    await engine.dispose()
         logger.info("trueroute stopped")
 
     return lifespan  # type: ignore[return-value]
@@ -251,6 +296,7 @@ def _build_lifespan(
 def create_app(
     settings: Settings | None = None,
     services: Services | None = None,
+    auth_factory: AuthFactory | None = None,
     *,
     guard: DemoGuard | None = None,
     request_timeout_s: float = REQUEST_TIMEOUT_S,
@@ -260,7 +306,7 @@ def create_app(
     app = FastAPI(
         title="TrueRoute AI",
         version="0.1.0",
-        lifespan=_build_lifespan(settings, services, guard),  # type: ignore[arg-type]
+        lifespan=_build_lifespan(settings, services, guard, auth_factory),  # type: ignore[arg-type]
     )
     for cls in (GeocoderError, OverpassError, LLMError, PipelineTimeoutError):
         app.add_exception_handler(cls, _pipeline_error)
@@ -343,6 +389,7 @@ def create_app(
             routing_attribution=routing_attribution(itinerary),
         )
 
+    api.include_router(auth_router)
     app.include_router(api)
     # no fallback, an unknown path is a 404 and never the page, so /api typos stay visible
     app.frontend("/", directory=FRONTEND_DIR, fallback=None, check_dir=True)

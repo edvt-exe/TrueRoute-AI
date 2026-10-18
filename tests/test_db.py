@@ -23,6 +23,8 @@ from tests.test_config import minimal
 # a throwaway database, every run drops and recreates the tables
 TEST_URL = os.environ.get("TEST_DATABASE_URL", "")
 ROOT = Path(__file__).resolve().parent.parent
+# the other settings accounts need, so a database url alone is accepted in these tests
+ACCOUNT_KEYS = "TURNSTILE_SITE_KEY=1x00000000000000000000AA\nTURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA\nOTP_HMAC_KEY=" + "k" * 40 + "\n"
 HASH = "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaGhhc2g"
 T = TypeVar("T")
 
@@ -65,11 +67,11 @@ def schema() -> None:
 def test_database_url_setting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
     good = "postgresql+asyncpg://trueroute:s3cret-pw@localhost:5432/trueroute"
-    settings = load_settings(minimal(tmp_path, f"DATABASE_URL={good}\n"))
+    settings = load_settings(minimal(tmp_path, f"DATABASE_URL={good}\n{ACCOUNT_KEYS}"))
     assert settings.database_url is not None
     assert "s3cret-pw" not in repr(settings)
     with pytest.raises(ConfigError) as exc:
-        load_settings(minimal(tmp_path, "DATABASE_URL=postgresql://trueroute:s3cret-pw@localhost/trueroute\n"))
+        load_settings(minimal(tmp_path, f"DATABASE_URL=postgresql://trueroute:s3cret-pw@localhost/trueroute\n{ACCOUNT_KEYS}"))
     assert "must start with postgresql+asyncpg://" in exc.value.message
     assert "s3cret-pw" not in exc.value.message
 

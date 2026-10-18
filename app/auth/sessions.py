@@ -5,10 +5,11 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
-from fastapi import HTTPException, Request, Response
+from fastapi import Request, Response
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.auth.errors import AuthError
 from app.db.models import AuthSession, User
 
 # __Host- makes the browser refuse it unless Secure, Path=/ and no Domain, so no subdomain can plant one
@@ -108,11 +109,11 @@ async def current_user(request: Request) -> User:
     # dependency for routes that need a signed-in user, 401 otherwise
     sessions: async_sessionmaker[AsyncSession] | None = getattr(request.app.state, "db_sessions", None)
     if sessions is None:
-        raise HTTPException(503, "accounts are not available")
+        raise AuthError("accounts_unavailable")
     # tests set app.state.clock to control time
     clock: Callable[[], datetime] = getattr(request.app.state, "clock", utc_now)
     async with sessions() as session, session.begin():
         user = await resolve_session(session, request.cookies.get(COOKIE_NAME), now=clock())
     if user is None:
-        raise HTTPException(401, "sign in first")
+        raise AuthError("not_signed_in")
     return user

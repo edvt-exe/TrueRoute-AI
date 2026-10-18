@@ -103,3 +103,20 @@ class SignInRequest(_Strict):
 class OtpVerifyRequest(_Strict):
     challenge_id: str = Field(pattern=CHALLENGE_PATTERN)
     code: str = Field(pattern=OTP_PATTERN)
+
+
+class ResendRequest(_Strict):
+    challenge_id: str = Field(pattern=CHALLENGE_PATTERN)
+
+
+class TwoFactorRequest(_Strict):
+    enabled: bool
+    # the current password again, so a stolen session alone cannot switch 2fa off
+    password: SecretStr
+
+    @field_validator("password")
+    @classmethod
+    def _cap_password(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value():
+            raise ValueError("must not be empty")
+        return _raw_password(value)

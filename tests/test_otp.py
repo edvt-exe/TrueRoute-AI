@@ -113,7 +113,7 @@ def test_resend_waits_and_retires_the_old_code() -> None:
         first_id, first_code = await issue_at(session, user_id, NOW)
         with pytest.raises(OtpThrottledError) as exc:
             await issue_at(session, user_id, NOW + timedelta(seconds=10))
-        assert exc.value.retry_after_s == 51
+        assert exc.value.retry_after_s == 50
         second_id, second_code = await issue_at(session, user_id, NOW + RESEND_COOLDOWN)
         assert await verify_at(session, first_id, first_code, NOW + RESEND_COOLDOWN) is None
         assert await verify_at(session, second_id, second_code, NOW + RESEND_COOLDOWN) == user_id

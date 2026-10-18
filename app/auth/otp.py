@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import math
 import secrets
 import uuid
 from datetime import datetime, timedelta
@@ -51,7 +52,7 @@ def _aware(now: datetime) -> datetime:
 
 
 def _seconds_until(moment: datetime, now: datetime) -> int:
-    return max(1, int((moment - now).total_seconds()) + 1)
+    return max(1, math.ceil((moment - now).total_seconds()))
 
 
 async def issue(session: AsyncSession, *, user_id: uuid.UUID, purpose: str, key: bytes, now: datetime) -> tuple[str, str]:

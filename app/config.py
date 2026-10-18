@@ -24,6 +24,7 @@ LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+MIN_OTP_KEY = 32
 # anthropic keys start with this, a key in a public setting would go to third parties
 KEY_PREFIX = "sk-ant-"
 
@@ -73,6 +74,8 @@ class Settings(BaseSettings):
     # cloudflare turnstile, both or neither, the site key is public, the secret is not
     turnstile_site_key: str | None = None
     turnstile_secret_key: SecretStr | None = None
+    # hmac key for one-time codes, at least 32 random characters, changing it voids open codes
+    otp_hmac_key: SecretStr | None = None
 
     @field_validator("anthropic_api_key")
     @classmethod
@@ -102,7 +105,7 @@ class Settings(BaseSettings):
         # sent to nominatim and overpass with every request
         return check_user_agent(_no_key(value))
 
-    @field_validator("ors_api_key", "demo_access_code", "database_url", "turnstile_site_key", "turnstile_secret_key", mode="before")
+    @field_validator("ors_api_key", "demo_access_code", "database_url", "turnstile_site_key", "turnstile_secret_key", "otp_hmac_key", mode="before")
     @classmethod
     def _blank_is_none(cls, value: object) -> object:
         # the empty line from .env.example means the feature is off
@@ -145,6 +148,29 @@ class Settings(BaseSettings):
         if value is not None:
             check_turnstile_key(value.get_secret_value())
         return value
+
+    @field_validator("otp_hmac_key")
+    @classmethod
+    def _check_otp_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        raw = value.get_secret_value()
+        if len(raw) < MIN_OTP_KEY or not raw.isprintable() or any(ch.isspace() for ch in raw):
+            raise ValueError(f"must be at least {MIN_OTP_KEY} printable characters without spaces")
+        return value
+
+    @model_validator(mode="after")
+    def _accounts_all_or_nothing(self) -> Self:
+        # accounts need the database, the human check and the code key together, never part of them
+        needed = {"DATABASE_URL": self.database_url, "TURNSTILE_SECRET_KEY": self.turnstile_secret_key, "OTP_HMAC_KEY": self.otp_hmac_key}
+        missing = [name for name, value in needed.items() if value is None]
+        if missing and len(missing) < len(needed):
+            raise ValueError(f"accounts also need {', '.join(missing)}")
+        return self
+
+    @property
+    def accounts_enabled(self) -> bool:
+        return self.database_url is not None
 
     @model_validator(mode="after")
     def _turnstile_pair(self) -> Self:

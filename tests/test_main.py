@@ -631,7 +631,8 @@ def test_old_paths_are_gone() -> None:
         assert client.post("/itinerary", json=BODY).status_code == 404
         assert client.get("/health").status_code == 404
         paths = set(client.get("/openapi.json").json()["paths"])
-    assert paths == {"/api/itinerary", "/api/health", "/api/auth/captcha"}
+    auth = {"captcha", "signup", "signin", "signout", "me", "2fa", "otp/verify", "otp/resend"}
+    assert paths == {"/api/itinerary", "/api/health"} | {f"/api/auth/{p}" for p in auth}
 
 
 def test_openapi_documents_guard_errors() -> None:
