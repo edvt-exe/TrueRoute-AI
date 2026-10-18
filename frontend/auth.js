@@ -16,14 +16,21 @@ const ENDPOINTS = {
   resend: "/api/auth/otp/resend",
 };
 const CLIENT_TIMEOUT_MS = 20000;
-// cloudflare turnstile writes its token into a hidden input with this name
-const CAPTCHA_FIELD = "cf-turnstile-response";
+// the server hands out the public site key, null while the human check is not configured
+const CAPTCHA_CONFIG_URL = "/api/auth/captcha";
+// fetched from cloudflare's exact url as their docs require, the page csp allows only this origin
+const TURNSTILE_ONLOAD = "trueRouteTurnstileReady";
+const TURNSTILE_SCRIPT = `https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=${TURNSTILE_ONLOAD}`;
+// one action per form, the server refuses a token solved for the other form
+const CAPTCHA_ACTIONS = { "signup-captcha": "signup", "signin-captcha": "signin" };
 
 const MESSAGES = {
   invalid_credentials: "Wrong username, email or password.",
   captcha_required: "Complete the human check, then try again.",
   captcha_failed: "The human check failed. Try again.",
-  captcha_missing: "The human check has not loaded yet. Reload the page and try again.",
+  captcha_loading: "The human check is still loading. Wait a moment, then try again.",
+  captcha_blocked: "The human check could not load. Check your connection or content blocker, then reload the page.",
+  captcha_off: "The human check is not set up on this server yet, so accounts are closed.",
   username_taken: "That username is taken. Pick another one.",
   password_breached: "This password appears in known data breaches. Choose a different one.",
   invalid_code: "That code is wrong or has expired.",
@@ -38,7 +45,7 @@ const MESSAGES = {
 
 const $ = (id) => document.getElementById(id);
 // the challenge id lives in memory only, never in browser storage or the url
-const state = { busy: false, challengeId: null };
+const state = { busy: false, challengeId: null, captcha: { status: "loading", siteKey: null, widgets: {} } };
 
 // password rules
 
@@ -145,9 +152,73 @@ function setBusy(busy) {
   for (const id of ["signin-submit", "signup-submit", "otp-submit", "otp-resend"]) $(id).disabled = busy;
 }
 
+// human check
+
+function setCaptchaNote(slotId, text) {
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent = text;
+  $(slotId).classList.remove("is-loaded");
+  $(slotId).replaceChildren(note);
+}
+
+function renderCaptcha(slotId) {
+  const captcha = state.captcha;
+  if (captcha.status !== "ready" || slotId in captcha.widgets || $(slotId).hidden) return;
+  $(slotId).replaceChildren();
+  $(slotId).classList.add("is-loaded");
+  captcha.widgets[slotId] = window.turnstile.render(`#${slotId}`, {
+    sitekey: captcha.siteKey,
+    action: CAPTCHA_ACTIONS[slotId],
+    theme: "auto",
+  });
+}
+
+function captchaFailed(status, message) {
+  state.captcha.status = status;
+  for (const slotId of Object.keys(CAPTCHA_ACTIONS)) setCaptchaNote(slotId, message);
+}
+
+async function loadCaptcha() {
+  let siteKey;
+  try {
+    const response = await fetch(CAPTCHA_CONFIG_URL, { credentials: "same-origin", cache: "no-store" });
+    if (!response.ok) throw new Error("config");
+    siteKey = (await response.json()).site_key;
+  } catch (_) {
+    return captchaFailed("blocked", MESSAGES.captcha_blocked);
+  }
+  if (typeof siteKey !== "string" || !siteKey) return captchaFailed("off", MESSAGES.captcha_off);
+  state.captcha.siteKey = siteKey;
+  // turnstile calls this by name once its script has run
+  window[TURNSTILE_ONLOAD] = () => {
+    state.captcha.status = "ready";
+    for (const slotId of Object.keys(CAPTCHA_ACTIONS)) renderCaptcha(slotId);
+  };
+  const script = document.createElement("script");
+  script.src = TURNSTILE_SCRIPT;
+  script.async = true;
+  script.addEventListener("error", () => captchaFailed("blocked", MESSAGES.captcha_blocked));
+  document.head.append(script);
+}
+
 function captchaToken(slotId) {
-  const field = $(slotId).querySelector(`input[name="${CAPTCHA_FIELD}"]`);
-  return field && field.value ? field.value : null;
+  const widget = state.captcha.widgets[slotId];
+  return widget === undefined ? null : window.turnstile.getResponse(widget) || null;
+}
+
+function captchaProblem() {
+  return {
+    loading: MESSAGES.captcha_loading,
+    blocked: MESSAGES.captcha_blocked,
+    off: MESSAGES.captcha_off,
+  }[state.captcha.status] || MESSAGES.captcha_required;
+}
+
+function resetCaptcha(slotId) {
+  // cloudflare accepts each token once, every attempt needs a fresh one
+  const widget = state.captcha.widgets[slotId];
+  if (widget !== undefined) window.turnstile.reset(widget);
 }
 
 function selectTab(name) {
@@ -203,6 +274,10 @@ async function onSignIn(event) {
   const body = { identifier, password };
   const token = captchaToken("signin-captcha");
   if (token) body.captcha_token = token;
+  else if (!$("signin-captcha").hidden) {
+    setStatus("signin-status", captchaProblem(), true);
+    return;
+  }
 
   setBusy(true);
   setStatus("signin-status", "Signing in…");
@@ -212,7 +287,11 @@ async function onSignIn(event) {
     if (result.ok && result.data && result.data.status === "otp_required" && validChallenge(result.data)) {
       return showOtp(result.data.challenge_id, "Enter the 6-digit code we emailed you to finish signing in.");
     }
-    if (errorCode(result) === "captcha_required") $("signin-captcha").hidden = false;
+    resetCaptcha("signin-captcha");
+    if (errorCode(result) === "captcha_required") {
+      $("signin-captcha").hidden = false;
+      renderCaptcha("signin-captcha");
+    }
     $("signin-password").value = "";
     setStatus("signin-status", errorMessage(result), true);
   } finally {
@@ -231,7 +310,7 @@ async function onSignUp(event) {
   if (!rules.length || !rules.classes || !rules.personal) problems.push("The password does not meet every rule.");
   if (!rules.match) problems.push("The passwords do not match.");
   const token = captchaToken("signup-captcha");
-  if (!token) problems.push(MESSAGES.captcha_missing);
+  if (!token) problems.push(captchaProblem());
   if (problems.length) {
     setStatus("signup-status", problems.join(" "), true);
     return;
@@ -245,6 +324,7 @@ async function onSignUp(event) {
       // the same answer whether or not the email already had an account
       return showOtp(result.data.challenge_id, "If this email can be used, we sent it a 6-digit code. Enter it to confirm your address.");
     }
+    resetCaptcha("signup-captcha");
     setStatus("signup-status", errorMessage(result), true);
   } finally {
     setBusy(false);
@@ -306,6 +386,7 @@ function init() {
     $(id).addEventListener("input", renderRules);
   }
   if (window.location.hash === "#signup") selectTab("signup");
+  loadCaptcha();
 }
 
 document.addEventListener("DOMContentLoaded", init);

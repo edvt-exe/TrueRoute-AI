@@ -160,6 +160,11 @@
   display: none;
 }
 
+/* the widget draws its own 300 by 65 frame, the dashed placeholder steps aside */
+.captcha-slot.is-loaded {
+  border-color: transparent;
+}
+
 .otp-input {
   font-size: 20px;
   font-variant-numeric: tabular-nums;

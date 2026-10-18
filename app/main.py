@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.auth.captcha import TEST_SECRETS
 from app.config import Settings, configure_logging, load_settings
 from app.security import ACCESS_HEADER, DemoGuard, Refusal, is_cross_site, security_headers
 from app.schemas import DistanceSource, GeocodeResult, Itinerary, PlaceCandidates, UserRequest
@@ -211,6 +212,10 @@ def _build_lifespan(
         cfg = settings or load_settings()
         configure_logging(cfg)
         app.state.guard = DemoGuard(cfg.demo_access_code, cfg.rate_limit_per_ip_hour, cfg.daily_itinerary_cap)
+        app.state.captcha_site_key = cfg.turnstile_site_key
+        secret = cfg.turnstile_secret_key
+        if secret is not None and secret.get_secret_value() in TEST_SECRETS:
+            logger.warning("turnstile test keys in use, every human check passes, never run like this in production")
         async with (
             httpx.AsyncClient() as http,
             anthropic.AsyncAnthropic(api_key=cfg.anthropic_api_key.get_secret_value()) as llm,
@@ -293,6 +298,11 @@ def create_app(
     async def health() -> dict[str, str]:
         # no upstream calls, health checks must not spend osm or llm quota
         return {"status": "ok"}
+
+    @api.get("/auth/captcha")
+    async def captcha_config(request: Request) -> dict[str, str | None]:
+        # the public site key for the widget, null while the human check is not configured
+        return {"site_key": getattr(request.app.state, "captcha_site_key", None)}
 
     @api.post(
         "/itinerary",

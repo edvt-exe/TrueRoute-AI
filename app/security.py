@@ -52,6 +52,12 @@ SECURITY_HEADERS: dict[str, str] = {
     "Cross-Origin-Opener-Policy": "same-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
 }
+# pages with the turnstile widget load its script and iframe from cloudflare, nothing else changes
+CAPTCHA_PAGES = ("/auth.html",)
+TURNSTILE_ORIGIN = "https://challenges.cloudflare.com"
+CAPTCHA_CSP = CSP.replace("script-src 'self'", f"script-src 'self' {TURNSTILE_ORIGIN}").replace(
+    "frame-ancestors 'none'", f"frame-src {TURNSTILE_ORIGIN}; frame-ancestors 'none'"
+)
 # swagger ui loads its own scripts and inline code, the strict csp would blank it
 DOCS_PATHS = ("/docs", "/redoc")
 
@@ -180,6 +186,8 @@ def security_headers(path: str) -> dict[str, str]:
     headers = dict(SECURITY_HEADERS)
     if path == "/api" or path.startswith("/api/"):
         headers["Cache-Control"] = API_CACHE_CONTROL
+    if path in CAPTCHA_PAGES:
+        headers["Content-Security-Policy"] = CAPTCHA_CSP
     if any(path == d or path.startswith(d + "/") for d in DOCS_PATHS):
         del headers["Content-Security-Policy"]
     return headers

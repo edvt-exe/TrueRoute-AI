@@ -6,6 +6,7 @@ from typing import Literal, Self
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.auth.captcha import check_turnstile_key
 from app.db.engine import check_database_url
 from app.services.geocoder import DEFAULT_BASE_URL as NOMINATIM_DEFAULT_URL
 from app.services.llm_agent import ALLOWED_EFFORTS, DEFAULT_EFFORT, DEFAULT_MODEL, is_model_id
@@ -69,6 +70,9 @@ class Settings(BaseSettings):
     log_level: LogLevel = "INFO"
     # optional until accounts ship, it holds the database password
     database_url: SecretStr | None = None
+    # cloudflare turnstile, both or neither, the site key is public, the secret is not
+    turnstile_site_key: str | None = None
+    turnstile_secret_key: SecretStr | None = None
 
     @field_validator("anthropic_api_key")
     @classmethod
@@ -98,7 +102,7 @@ class Settings(BaseSettings):
         # sent to nominatim and overpass with every request
         return check_user_agent(_no_key(value))
 
-    @field_validator("ors_api_key", "demo_access_code", "database_url", mode="before")
+    @field_validator("ors_api_key", "demo_access_code", "database_url", "turnstile_site_key", "turnstile_secret_key", mode="before")
     @classmethod
     def _blank_is_none(cls, value: object) -> object:
         # the empty line from .env.example means the feature is off
@@ -129,6 +133,24 @@ class Settings(BaseSettings):
         if value is not None:
             check_database_url(value.get_secret_value())
         return value
+
+    @field_validator("turnstile_site_key")
+    @classmethod
+    def _check_site_key(cls, value: str | None) -> str | None:
+        return None if value is None else check_turnstile_key(value)
+
+    @field_validator("turnstile_secret_key")
+    @classmethod
+    def _check_secret_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None:
+            check_turnstile_key(value.get_secret_value())
+        return value
+
+    @model_validator(mode="after")
+    def _turnstile_pair(self) -> Self:
+        if (self.turnstile_site_key is None) != (self.turnstile_secret_key is None):
+            raise ValueError("TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY must be set together")
+        return self
 
     @field_validator("nominatim_base_url", "overpass_base_url", "ors_base_url", "osrm_base_url")
     @classmethod
