@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
+  <meta name="color-scheme" content="dark">
   <title>TrueRoute</title>
   <meta name="description" content="Day-by-day city walking plans built from real OpenStreetMap places.">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
@@ -23,8 +23,25 @@
       </svg>
       <span>TrueRoute</span>
     </a>
-    <nav class="topbar-nav" aria-label="Resources">
+    <nav class="topbar-nav" aria-label="Resources and account">
       <a href="/docs">API docs</a>
+      <a id="account-signin" class="account-signin" href="/auth.html" hidden>Sign in</a>
+      <details id="account-menu" class="account-menu" hidden>
+        <summary id="account-name" class="account-name"></summary>
+        <div class="account-panel">
+          <p id="account-email" class="account-email"></p>
+          <form id="twofa-form" class="twofa" novalidate>
+            <p id="twofa-state" class="twofa-state"></p>
+            <div class="field">
+              <label for="twofa-password">Confirm with your password</label>
+              <input id="twofa-password" name="password" type="password" required maxlength="256" autocomplete="current-password">
+            </div>
+            <button id="twofa-submit" class="btn btn-secondary" type="submit"></button>
+            <p id="twofa-status" class="status" role="status" aria-live="polite"></p>
+          </form>
+          <button id="signout" class="btn btn-ghost btn-block" type="button">Sign out</button>
+        </div>
+      </details>
     </nav>
   </header>
 

@@ -1,179 +1,330 @@
-/* sign in and sign up, built on the tokens and controls in styles.css */
-.auth-main {
-  display: grid;
-  justify-items: center;
-  min-height: calc(100vh - var(--topbar-h));
-  padding: 48px 16px;
+/* sign in, create account and code entry: one card on the black page, tokens from styles.css */
+.auth-page {
+  --card: #0d0d0f;
+  --card-border: #2a2a2a;
+  --field: #121212;
+  --field-border: #2a2a2a;
+  --field-hover: #3a3a3a;
+  --field-focus: #e6e6e6;
+  --label: #a1a1a1;
+  --muted: #7a7a7a;
+  --heading: #ffffff;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: #000000;
 }
 
-.auth-panel {
-  width: 100%;
-  max-width: 400px;
-  align-self: start;
-  padding: 20px;
+/* page frame: brand left, way back right, no bar behind them */
+.auth-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px 32px;
 }
 
-.auth-tabs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 2px;
-  padding: 3px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-
-.auth-tabs[hidden] {
-  display: none;
-}
-
-.auth-tab {
-  height: 32px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-2);
+.auth-back {
+  color: var(--label);
+  font-size: 13px;
   font-weight: 500;
-  cursor: pointer;
+  text-decoration: none;
 }
 
-.auth-tab:hover {
-  color: var(--text);
+.auth-back:hover {
+  color: var(--heading);
 }
 
-.auth-tab[aria-selected="true"] {
-  background: var(--control-active);
-  color: var(--text);
-  box-shadow: var(--shadow-sm);
+.auth-main {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 6vh 16px 64px;
 }
 
-.auth-tab:focus-visible {
-  box-shadow: var(--ring);
+.auth-card {
+  width: 100%;
+  max-width: 416px;
+  padding: 40px 40px 32px;
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
 }
 
 .auth-form {
   display: grid;
-  gap: 16px;
+  gap: 20px;
 }
 
 .auth-form[hidden] {
   display: none;
 }
 
-/* styles.css styles text and password inputs, email joins them here */
-.auth-form input[type="email"] {
+.auth-head {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.auth-head h1 {
+  color: var(--heading);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+}
+
+.auth-head h1:focus {
+  outline: none;
+}
+
+.auth-head p {
+  color: var(--label);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* fields: a small muted label above a filled input */
+.auth-field {
+  display: grid;
+  gap: 8px;
+}
+
+.auth-field:has(> .captcha[hidden]) {
+  display: none;
+}
+
+.auth-field > label,
+.auth-label {
+  color: var(--label);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.auth-card input {
   width: 100%;
-  height: 36px;
-  padding: 0 10px;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
-  transition: border-color 120ms ease, box-shadow 120ms ease;
+  height: 44px;
+  padding: 0 14px;
+  background: var(--field);
+  border: 1px solid var(--field-border);
+  border-radius: 8px;
+  box-shadow: none;
+  color: var(--heading);
+  font-size: 14px;
+  transition: border-color 120ms ease;
 }
 
-.auth-form input[type="email"]:hover {
-  border-color: var(--text-3);
+.auth-card input:hover {
+  border-color: var(--field-hover);
 }
 
+.auth-card input:focus-visible {
+  border-color: var(--field-focus);
+  box-shadow: none;
+}
+
+.auth-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* show and hide sits inside the password field */
 .reveal-wrap {
   position: relative;
 }
 
 .reveal-wrap input {
-  padding-right: 64px;
+  padding-right: 68px;
 }
 
 .reveal {
   position: absolute;
-  top: 4px;
-  right: 4px;
-  height: 28px;
+  top: 7px;
+  right: 7px;
+  height: 30px;
   padding: 0 10px;
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--text-2);
+  color: var(--label);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
 }
 
 .reveal:hover {
-  background: var(--surface-2);
-  color: var(--text);
+  background: #1c1c1c;
+  color: var(--heading);
 }
 
-.reveal:focus-visible {
-  box-shadow: var(--ring);
-}
-
-/* live password checklist, the marker turns into a tick when a rule is met */
+/* password rules: a quiet list under the field, each line brightens once met */
 .rules {
   display: grid;
-  gap: 4px;
+  gap: 6px;
   margin: 2px 0 0;
   padding: 0;
   list-style: none;
-  color: var(--text-3);
+  color: var(--muted);
   font-size: 12px;
 }
 
 .rules li {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
+  line-height: 16px;
+  transition: color 120ms ease;
 }
 
 .rules li::before {
   content: "";
   flex: none;
-  width: 6px;
-  height: 6px;
+  width: 12px;
+  height: 12px;
+  margin-top: 2px;
+  border: 1px solid #3a3a3a;
   border-radius: 50%;
-  background: var(--border-strong);
 }
 
 .rules li.met {
-  color: var(--text-2);
+  color: var(--heading);
 }
 
 .rules li.met::before {
-  width: 8px;
-  height: 4px;
-  border-radius: 0;
-  background: transparent;
-  border-left: 2px solid var(--accent);
-  border-bottom: 2px solid var(--accent);
-  transform: rotate(-45deg) translate(1px, -1px);
+  border-color: var(--heading);
+  background: var(--heading)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3.2 6.2 5.1 8 8.8 4.2' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / 12px 12px no-repeat;
 }
 
-.captcha-slot {
+/* verification: a field-shaped placeholder until cloudflare draws its own widget in the same spot */
+.captcha {
   display: grid;
-  place-items: center;
+  align-items: center;
   min-height: 65px;
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius);
+  padding: 0 14px;
+  background: var(--field);
+  border: 1px solid var(--field-border);
+  border-radius: 8px;
 }
 
-.captcha-slot[hidden] {
-  display: none;
-}
-
-/* the widget draws its own 300 by 65 frame, the dashed placeholder steps aside */
-.captcha-slot.is-loaded {
+.captcha.is-loaded {
+  padding: 0;
+  background: transparent;
   border-color: transparent;
 }
 
-.otp-input {
-  font-size: 20px;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.4em;
+.captcha-note {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* the one primary action: solid white, bold black */
+.auth-submit {
+  width: 100%;
+  height: 44px;
+  margin-top: 4px;
+  border: 0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #000000;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.auth-submit:hover:not(:disabled) {
+  background: #d6d6d6;
+}
+
+.auth-submit:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.auth-submit:focus-visible {
+  box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--field-focus);
+}
+
+.auth-form .status {
+  margin-top: -8px;
+}
+
+.auth-form .status.is-error {
+  padding: 10px 12px;
+  border: 1px solid rgb(242 112 107 / 0.3);
+  border-radius: 8px;
+  background: rgb(242 112 107 / 0.06);
+  color: #f2908b;
+  font-size: 13px;
+}
+
+.auth-fine {
+  margin-top: -4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+/* switching views: one quiet line under a hairline */
+.auth-switch {
+  padding-top: 20px;
+  border-top: 1px solid #1f1f1f;
+  color: var(--muted);
+  font-size: 13px;
   text-align: center;
 }
 
+.link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--heading);
+  font: inherit;
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: #4a4a4a;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration-color: var(--heading);
+}
+
+.link-button:disabled {
+  color: var(--muted);
+  cursor: progress;
+}
+
+.otp-input.otp-input {
+  height: 56px;
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.5em;
+  text-align: center;
+  padding-left: calc(14px + 0.5em);
+}
+
+@media (max-width: 480px) {
+  .auth-header {
+    padding: 18px 20px;
+  }
+
+  .auth-main {
+    padding-top: 2vh;
+  }
+
+  .auth-card {
+    padding: 28px 20px 24px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .auth-form input[type="email"] {
+  .auth-card input,
+  .rules li,
+  .auth-submit {
     transition: none;
   }
 }

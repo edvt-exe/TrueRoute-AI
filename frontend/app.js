@@ -12,6 +12,8 @@ const TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 const OSM_TYPES = new Set(["node", "way", "relation"]);
 const EMPTY_MAP_TEXT = "Choose a city and generate a plan to see each day's stops and walking route here.";
+// account routes in app/auth/routes.py
+const ACCOUNT_URLS = { me: "/api/auth/me", signout: "/api/auth/signout", twoFactor: "/api/auth/2fa" };
 
 // every error code the api can return, with what the visitor should do next
 const MESSAGES = {
@@ -28,6 +30,8 @@ const MESSAGES = {
   rate_limited: "You have planned a lot in the last hour.",
   daily_cap_reached: "The demo has used up today's plans.",
   cross_site_request: "This request came from another site and was blocked. Open TrueRoute directly and try again.",
+  invalid_credentials: "That password is not right.",
+  not_signed_in: "Your session ended. Sign in again.",
   network: "Could not reach the server. Check your connection and try again.",
   client_timeout: "No answer from the server. Try again in a moment.",
 };
@@ -41,6 +45,8 @@ const state = {
   day: 0,
   stop: 0,
   busy: false,
+  // the signed-in account from /api/auth/me, null when signed out or accounts are off
+  account: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -465,8 +471,87 @@ function drawDay(day) {
   else state.map.fitBounds(L.latLngBounds(walking ? day.route_latlon : points), { padding: [56, 56], maxZoom: 17 });
 }
 
+// account
+
+function showAccount(account) {
+  state.account = account;
+  $("account-signin").hidden = true;
+  $("account-menu").hidden = false;
+  $("account-name").textContent = account.username;
+  $("account-email").textContent = account.email;
+  const on = account.two_factor_enabled;
+  $("twofa-state").textContent = on ? "Two-step sign-in is on" : "Two-step sign-in is off";
+  $("twofa-submit").textContent = on ? "Turn off two-step sign-in" : "Turn on two-step sign-in";
+}
+
+async function loadAccount() {
+  let response;
+  try {
+    response = await fetch(ACCOUNT_URLS.me, { credentials: "same-origin", cache: "no-store" });
+  } catch (_) {
+    return;
+  }
+  if (response.ok) showAccount(await response.json());
+  // signed out: offer sign-in; any other answer means accounts are off here, so show nothing
+  else if (response.status === 401) $("account-signin").hidden = false;
+}
+
+async function accountPost(url, body) {
+  return fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+    credentials: "same-origin",
+    cache: "no-store",
+    redirect: "error",
+  });
+}
+
+async function toggleTwoFactor(event) {
+  event.preventDefault();
+  const password = $("twofa-password").value;
+  if (!password || !state.account) {
+    $("twofa-status").textContent = "Enter your password to confirm.";
+    $("twofa-status").classList.add("is-error");
+    return;
+  }
+  $("twofa-submit").disabled = true;
+  try {
+    const response = await accountPost(ACCOUNT_URLS.twoFactor, { enabled: !state.account.two_factor_enabled, password });
+    $("twofa-password").value = "";
+    if (response.ok) {
+      showAccount(await response.json());
+      $("twofa-status").classList.remove("is-error");
+      $("twofa-status").textContent = state.account.two_factor_enabled
+        ? "Done. Signing in now also needs a code from your email."
+        : "Done. Signing in needs only your password.";
+    } else {
+      const { message } = await readError(response);
+      $("twofa-status").classList.add("is-error");
+      $("twofa-status").textContent = message;
+    }
+  } catch (_) {
+    $("twofa-status").classList.add("is-error");
+    $("twofa-status").textContent = MESSAGES.network;
+  } finally {
+    $("twofa-submit").disabled = false;
+  }
+}
+
+async function signOut() {
+  try {
+    await accountPost(ACCOUNT_URLS.signout, {});
+  } finally {
+    // a fresh load shows the signed-out state from the server, nothing is cached here
+    window.location.reload();
+  }
+}
+
 function start() {
   initMap();
+  loadAccount();
+  $("twofa-form").addEventListener("submit", toggleTwoFactor);
+  $("signout").addEventListener("click", signOut);
   syncStepper();
   $("plan-form").addEventListener("submit", submit);
   $("days").addEventListener("change", syncStepper);

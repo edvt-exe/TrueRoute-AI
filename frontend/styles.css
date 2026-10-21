@@ -7,60 +7,45 @@
   src: url(fonts/Geist-Variable.woff2) format("woff2");
 }
 
-/* tokens: zinc neutrals and one blue accent, light first, dark follows the system */
+/* tokens: dark only. the interface is black, charcoal and white; the one colour is trail-marker amber,
+   kept for the walk itself: the route line, stop markers and the brand mark */
 :root {
-  color-scheme: light dark;
-  --bg: #fafafa;
-  --surface: #ffffff;
-  --surface-2: #f4f4f5;
-  --border: #e4e4e7;
-  --border-strong: #d4d4d8;
-  --text: #18181b;
-  --text-2: #52525b;
-  --text-3: #71717a;
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-text: #ffffff;
-  --accent-soft: #eff4ff;
-  --accent-line: #2563eb;
-  --control-active: #ffffff;
-  --danger: #b91c1c;
-  --danger-soft: #fef2f2;
-  --shadow-sm: 0 1px 2px rgb(24 24 27 / 0.05);
-  --shadow-md: 0 1px 2px rgb(24 24 27 / 0.06), 0 4px 12px rgb(24 24 27 / 0.06);
-  --ring: 0 0 0 3px rgb(37 99 235 / 0.25);
+  color-scheme: dark;
+  --bg: #000000;
+  --surface: #0f0f11;
+  --surface-2: #17171a;
+  --surface-3: #1f1f23;
+  --border: #26262b;
+  --border-strong: #34343a;
+  --text: #ededef;
+  --text-2: #9b9ba5;
+  --text-3: #74747e;
+  /* interface actions are monochrome */
+  --primary: #ededef;
+  --primary-hover: #ffffff;
+  --primary-text: #000000;
+  /* the route colour, read by app.js for the map line */
+  --accent: #e3a93b;
+  --accent-text: #000000;
+  --accent-soft: rgb(227 169 59 / 0.12);
+  --accent-line: #e3a93b;
+  --control-active: #26262b;
+  /* form fields, shared with the sign-in card */
+  --field: #121212;
+  --field-border: #2a2a2a;
+  --field-focus: #e6e6e6;
+  --danger: #f2706b;
+  --danger-soft: rgb(242 112 107 / 0.08);
+  --shadow-sm: none;
+  --shadow-md: 0 8px 24px rgb(0 0 0 / 0.6);
+  --ring: 0 0 0 2px #000000, 0 0 0 4px rgb(237 237 239 / 0.55);
   --radius: 8px;
   --radius-lg: 12px;
   --font: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --topbar-h: 56px;
   --sidebar-w: 420px;
-  --tile-filter: none;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #09090b;
-    --surface: #111113;
-    --surface-2: #18181b;
-    --border: #27272a;
-    --border-strong: #3f3f46;
-    --text: #fafafa;
-    --text-2: #a1a1aa;
-    --text-3: #8b8b94;
-    --accent: #3b82f6;
-    --accent-hover: #2563eb;
-    --accent-text: #ffffff;
-    --accent-soft: rgb(59 130 246 / 0.12);
-    --accent-line: #60a5fa;
-    --control-active: #2a2a2f;
-    --danger: #f87171;
-    --danger-soft: rgb(248 113 113 / 0.1);
-    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
-    --shadow-md: 0 1px 2px rgb(0 0 0 / 0.5), 0 8px 24px rgb(0 0 0 / 0.35);
-    --ring: 0 0 0 3px rgb(96 165 250 / 0.35);
-    /* osm tiles darkened in the browser, the tile images themselves are untouched */
-    --tile-filter: invert(1) hue-rotate(180deg) brightness(0.88) contrast(0.88) saturate(0.6);
-  }
+  /* osm tiles darkened in the browser, the tile images themselves are untouched */
+  --tile-filter: invert(1) hue-rotate(180deg) brightness(0.78) contrast(0.92) saturate(0.35);
 }
 
 *,
@@ -85,9 +70,14 @@ body {
 }
 
 a {
-  color: var(--accent-line);
+  color: var(--text);
+  text-decoration-color: var(--text-3);
   text-decoration-thickness: 1px;
-  text-underline-offset: 2px;
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  text-decoration-color: var(--text);
 }
 
 h1,
@@ -179,6 +169,107 @@ svg {
   color: var(--text);
 }
 
+.topbar-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* account: a sign-in link when signed out, a menu under the username when signed in */
+.topbar-nav .account-signin {
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+}
+
+.account-menu {
+  position: relative;
+}
+
+.account-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  list-style: none;
+}
+
+.account-name::-webkit-details-marker {
+  display: none;
+}
+
+.account-name::after {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-right: 1.5px solid var(--text-3);
+  border-bottom: 1.5px solid var(--text-3);
+  transform: rotate(45deg);
+}
+
+.account-menu[open] .account-name,
+.account-name:hover {
+  background: var(--surface-2);
+}
+
+.account-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 1200;
+  display: grid;
+  gap: 14px;
+  width: 300px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+
+.account-email {
+  color: var(--text-2);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.twofa {
+  display: grid;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.twofa-state {
+  font-weight: 500;
+}
+
+.btn-secondary {
+  width: 100%;
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+
+.btn-block {
+  width: 100%;
+  border-color: var(--border);
+}
+
 /* workspace: sidebar on the left, framed map on the right */
 .workspace {
   display: grid;
@@ -202,10 +293,10 @@ svg {
 
 .view-head h1,
 .result-title {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 600;
-  letter-spacing: -0.02em;
-  line-height: 1.25;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
 }
 
 .view-head p {
@@ -305,10 +396,10 @@ input[type="text"],
 input[type="password"],
 input[type="number"] {
   width: 100%;
-  height: 36px;
-  padding: 0 10px;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
+  height: 40px;
+  padding: 0 12px;
+  background: var(--field);
+  border: 1px solid var(--field-border);
   border-radius: var(--radius);
   box-shadow: var(--shadow-sm);
   transition: border-color 120ms ease, box-shadow 120ms ease;
@@ -324,8 +415,8 @@ input[type="password"]:hover {
 }
 
 input:focus-visible {
-  border-color: var(--accent);
-  box-shadow: var(--ring);
+  border-color: var(--field-focus);
+  box-shadow: none;
 }
 
 input[aria-invalid="true"] {
@@ -336,10 +427,9 @@ input[aria-invalid="true"] {
 .stepper {
   display: inline-flex;
   align-items: center;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--field-border);
   border-radius: var(--radius);
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  background: var(--field);
   overflow: hidden;
 }
 
@@ -446,7 +536,7 @@ input[aria-invalid="true"] {
 .segmented input:checked + label {
   background: var(--control-active);
   color: var(--text);
-  box-shadow: var(--shadow-md);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
 .segmented input:focus-visible + label,
@@ -482,9 +572,9 @@ input[aria-invalid="true"] {
 }
 
 .pills input:checked + label {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  color: var(--accent-line);
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-text);
 }
 
 /* buttons */
@@ -514,13 +604,13 @@ input[aria-invalid="true"] {
 
 .btn-primary {
   width: 100%;
-  background: var(--accent);
-  color: var(--accent-text);
-  box-shadow: var(--shadow-sm);
+  background: var(--primary);
+  color: var(--primary-text);
+  font-weight: 600;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: var(--accent-hover);
+  background: #d6d6d6;
 }
 
 .btn-primary:disabled {
@@ -631,7 +721,7 @@ input[aria-invalid="true"] {
 .tab[aria-selected="true"] {
   background: var(--control-active);
   color: var(--text);
-  box-shadow: var(--shadow-md);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
 .day-theme {
@@ -792,7 +882,7 @@ input[aria-invalid="true"] {
 }
 
 .leaflet-container a {
-  color: var(--accent-line);
+  color: var(--text-2);
 }
 
 .leaflet-tile-pane {
@@ -947,7 +1037,7 @@ input[aria-invalid="true"] {
   z-index: 600;
   height: 2px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  background: rgb(237 237 239 / 0.1);
 }
 
 .progress::after {
@@ -956,7 +1046,7 @@ input[aria-invalid="true"] {
   top: 0;
   bottom: 0;
   width: 30%;
-  background: var(--accent);
+  background: var(--text);
   animation: progress-slide 1.2s ease-in-out infinite;
 }
 

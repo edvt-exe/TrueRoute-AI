@@ -14,6 +14,7 @@ const ENDPOINTS = {
   signup: "/api/auth/signup",
   verify: "/api/auth/otp/verify",
   resend: "/api/auth/otp/resend",
+  me: "/api/auth/me",
 };
 const CLIENT_TIMEOUT_MS = 20000;
 // the server hands out the public site key, null while the human check is not configured
@@ -158,7 +159,7 @@ function setBusy(busy) {
 
 function setCaptchaNote(slotId, text) {
   const note = document.createElement("p");
-  note.className = "hint";
+  note.className = "captcha-note";
   note.textContent = text;
   $(slotId).classList.remove("is-loaded");
   $(slotId).replaceChildren(note);
@@ -166,13 +167,16 @@ function setCaptchaNote(slotId, text) {
 
 function renderCaptcha(slotId) {
   const captcha = state.captcha;
-  if (captcha.status !== "ready" || slotId in captcha.widgets || $(slotId).hidden) return;
+  // a widget drawn inside a hidden view would be sized wrong, it renders when the view shows
+  if (captcha.status !== "ready" || slotId in captcha.widgets || $(slotId).hidden || $(slotId).closest("form").hidden) return;
   $(slotId).replaceChildren();
   $(slotId).classList.add("is-loaded");
   captcha.widgets[slotId] = window.turnstile.render(`#${slotId}`, {
     sitekey: captcha.siteKey,
     action: CAPTCHA_ACTIONS[slotId],
-    theme: "auto",
+    theme: "dark",
+    // fills the card width like the inputs around it
+    size: "flexible",
   });
 }
 
@@ -223,27 +227,17 @@ function resetCaptcha(slotId) {
   if (widget !== undefined) window.turnstile.reset(widget);
 }
 
-function selectTab(name) {
-  for (const tab of ["signin", "signup"]) {
-    const on = tab === name;
-    $(`tab-${tab}`).setAttribute("aria-selected", on ? "true" : "false");
-    $(`tab-${tab}`).tabIndex = on ? 0 : -1;
-    $(`${tab}-form`).hidden = !on;
-  }
-  $("auth-tabs").hidden = false;
+function selectView(name) {
+  for (const view of ["signin", "signup"]) $(`${view}-form`).hidden = view !== name;
   $("otp-form").hidden = true;
-}
-
-function onTabKey(event) {
-  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-  const next = $("tab-signin").getAttribute("aria-selected") === "true" ? "signup" : "signin";
-  selectTab(next);
-  $(`tab-${next}`).focus();
+  document.title = name === "signup" ? "Create account · TrueRoute" : "Sign in · TrueRoute";
+  // the new view's heading takes focus, so screen readers announce the switch
+  $(`${name}-title`).focus();
+  renderCaptcha(`${name}-captcha`);
 }
 
 function showOtp(challengeId, message) {
   state.challengeId = challengeId;
-  $("auth-tabs").hidden = true;
   $("signin-form").hidden = true;
   $("signup-form").hidden = true;
   $("otp-form").hidden = false;
@@ -381,10 +375,20 @@ function onReveal(event) {
   button.textContent = show ? "Hide" : "Show";
 }
 
+async function leaveIfSignedIn() {
+  // already signed in, nothing to do on this page
+  try {
+    const response = await fetch(ENDPOINTS.me, { credentials: "same-origin", cache: "no-store" });
+    if (response.ok) window.location.replace("/");
+  } catch (_) {
+    // offline: stay and let the forms explain
+  }
+}
+
 function init() {
-  $("tab-signin").addEventListener("click", () => selectTab("signin"));
-  $("tab-signup").addEventListener("click", () => selectTab("signup"));
-  $("auth-tabs").addEventListener("keydown", onTabKey);
+  for (const button of document.querySelectorAll("button[data-view]")) {
+    button.addEventListener("click", () => selectView(button.dataset.view));
+  }
   $("signin-form").addEventListener("submit", onSignIn);
   $("signup-form").addEventListener("submit", onSignUp);
   $("otp-form").addEventListener("submit", onVerify);
@@ -393,8 +397,9 @@ function init() {
   for (const id of ["signup-username", "signup-email", "signup-password", "signup-confirm"]) {
     $(id).addEventListener("input", renderRules);
   }
-  if (window.location.hash === "#signup") selectTab("signup");
+  if (window.location.hash === "#signup") selectView("signup");
   loadCaptcha();
+  leaveIfSignedIn();
 }
 
 document.addEventListener("DOMContentLoaded", init);

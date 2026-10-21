@@ -153,7 +153,7 @@ def test_every_local_reference_exists() -> None:
 
 def test_external_links_are_known() -> None:
     hrefs = {a.get("href") for t, a in page().tags if t == "a"}
-    assert hrefs == {"/", "/docs", "https://www.openstreetmap.org/copyright"}
+    assert hrefs == {"/", "/docs", "/auth.html", "https://www.openstreetmap.org/copyright"}
     urls = set(re.findall(r"https?://[^\s\"'`<>)]+", APP_JS))
     assert urls == {
         "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -358,9 +358,11 @@ def test_reduced_motion_respected() -> None:
     assert "reducedMotion()" in APP_JS
 
 
-def test_dark_theme_present() -> None:
-    assert "@media (prefers-color-scheme: dark)" in STYLES
-    assert '<meta name="color-scheme" content="light dark">' in INDEX
+def test_dark_only() -> None:
+    # one theme, the light palette was retired on purpose
+    assert "prefers-color-scheme" not in STYLES
+    assert "color-scheme: dark;" in STYLES
+    assert '<meta name="color-scheme" content="dark">' in INDEX
 
 
 # vendored code and licences

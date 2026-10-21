@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
+  <meta name="color-scheme" content="dark">
   <meta name="robots" content="noindex">
   <title>Sign in · TrueRoute</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
@@ -12,8 +12,8 @@
   <link rel="stylesheet" href="auth.css">
   <script src="auth.js" defer></script>
 </head>
-<body>
-  <header class="topbar">
+<body class="auth-page">
+  <header class="auth-header">
     <a class="brand" href="/" aria-label="TrueRoute home">
       <svg class="brand-mark" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
         <circle cx="5" cy="15" r="2.5"></circle>
@@ -22,87 +22,104 @@
       </svg>
       <span>TrueRoute</span>
     </a>
-    <nav class="topbar-nav" aria-label="Pages">
-      <a href="/">Back to planner</a>
-    </nav>
+    <a class="auth-back" href="/">Back to planner</a>
   </header>
 
   <main class="auth-main">
-    <section class="card auth-panel" aria-label="Account">
-      <div id="auth-tabs" class="auth-tabs" role="tablist" aria-label="Account">
-        <button id="tab-signin" class="auth-tab" type="button" role="tab" aria-selected="true" aria-controls="signin-form">Sign in</button>
-        <button id="tab-signup" class="auth-tab" type="button" role="tab" aria-selected="false" aria-controls="signup-form" tabindex="-1">Create account</button>
-      </div>
+    <div class="auth-card">
+      <form id="signin-form" class="auth-form" novalidate aria-labelledby="signin-title">
+        <div class="auth-head">
+          <h1 id="signin-title" tabindex="-1">Sign in to TrueRoute</h1>
+          <p>Use your username or email and your password.</p>
+        </div>
 
-      <form id="signin-form" class="auth-form" role="tabpanel" aria-labelledby="tab-signin" novalidate>
-        <div class="field">
+        <div class="auth-field">
           <label for="signin-identifier">Username or email</label>
           <input id="signin-identifier" name="identifier" type="text" required maxlength="254" autocomplete="username" autocapitalize="none" spellcheck="false">
         </div>
-        <div class="field">
+        <div class="auth-field">
           <label for="signin-password">Password</label>
           <div class="reveal-wrap">
             <input id="signin-password" name="password" type="password" required maxlength="256" autocomplete="current-password">
             <button class="reveal" type="button" data-reveal="signin-password" aria-pressed="false" aria-label="Show password">Show</button>
           </div>
         </div>
-        <div id="signin-captcha" class="captcha-slot" hidden>
-          <p class="hint">Loading the human check…</p>
+        <div class="auth-field">
+          <span class="auth-label" id="signin-check-label">Verification</span>
+          <div id="signin-captcha" class="captcha" role="group" aria-labelledby="signin-check-label" hidden>
+            <p class="captcha-note">Loading verification…</p>
+          </div>
         </div>
-        <button id="signin-submit" class="btn btn-primary" type="submit">Sign in</button>
+
+        <button id="signin-submit" class="auth-submit" type="submit">Sign in</button>
         <p id="signin-status" class="status" role="status" aria-live="polite"></p>
+
+        <p class="auth-switch">New to TrueRoute? <button class="link-button" type="button" data-view="signup">Create an account</button></p>
       </form>
 
-      <form id="signup-form" class="auth-form" role="tabpanel" aria-labelledby="tab-signup" novalidate hidden>
-        <div class="field">
+      <form id="signup-form" class="auth-form" novalidate aria-labelledby="signup-title" hidden>
+        <div class="auth-head">
+          <h1 id="signup-title" tabindex="-1">Create your account</h1>
+          <p>We email you a 6-digit code to confirm it is you.</p>
+        </div>
+
+        <div class="auth-field">
           <label for="signup-username">Username</label>
           <input id="signup-username" name="username" type="text" required minlength="3" maxlength="32" autocomplete="username" autocapitalize="none" spellcheck="false" aria-describedby="username-hint">
-          <p id="username-hint" class="hint">3 to 32 letters, digits or underscores.</p>
+          <p id="username-hint" class="auth-hint">3 to 32 letters, digits or underscores.</p>
         </div>
-        <div class="field">
+        <div class="auth-field">
           <label for="signup-email">Email</label>
-          <input id="signup-email" name="email" type="email" required maxlength="254" autocomplete="email" spellcheck="false" aria-describedby="email-hint">
-          <p id="email-hint" class="hint">We send a 6-digit code to confirm it is yours.</p>
+          <input id="signup-email" name="email" type="email" required maxlength="254" autocomplete="email" spellcheck="false">
         </div>
-        <div class="field">
+        <div class="auth-field">
           <label for="signup-password">Password</label>
           <div class="reveal-wrap">
             <input id="signup-password" name="password" type="password" required maxlength="256" autocomplete="new-password" aria-describedby="password-rules">
             <button class="reveal" type="button" data-reveal="signup-password" aria-pressed="false" aria-label="Show password">Show</button>
           </div>
-          <ul id="password-rules" class="rules">
+          <ul id="password-rules" class="rules" aria-label="Password rules">
             <li data-rule="length">12 to 128 characters</li>
-            <li data-rule="classes">Lowercase, uppercase, digit and symbol</li>
+            <li data-rule="classes">Uppercase, lowercase, a digit and a symbol</li>
             <li data-rule="personal">Does not contain your username or email</li>
             <li data-rule="match">Both passwords match</li>
           </ul>
         </div>
-        <div class="field">
+        <div class="auth-field">
           <label for="signup-confirm">Confirm password</label>
           <input id="signup-confirm" name="password_confirm" type="password" required maxlength="256" autocomplete="new-password">
         </div>
-        <div id="signup-captcha" class="captcha-slot">
-          <p class="hint">Loading the human check…</p>
+        <div class="auth-field">
+          <span class="auth-label" id="signup-check-label">Verification</span>
+          <div id="signup-captcha" class="captcha" role="group" aria-labelledby="signup-check-label">
+            <p class="captcha-note">Loading verification…</p>
+          </div>
         </div>
-        <p class="hint">We also check your password against known data breaches. Only an anonymous fragment of its hash leaves our server, never the password.</p>
-        <button id="signup-submit" class="btn btn-primary" type="submit">Create account</button>
+
+        <button id="signup-submit" class="auth-submit" type="submit">Create account</button>
         <p id="signup-status" class="status" role="status" aria-live="polite"></p>
+        <p class="auth-fine">We check new passwords against known data breaches. Only an anonymous fragment of a hash leaves our server, never the password.</p>
+
+        <p class="auth-switch">Already have an account? <button class="link-button" type="button" data-view="signin">Sign in</button></p>
       </form>
 
-      <form id="otp-form" class="auth-form" novalidate hidden aria-labelledby="otp-title">
-        <div class="view-head">
-          <h1 id="otp-title">Check your email</h1>
+      <form id="otp-form" class="auth-form" novalidate aria-labelledby="otp-title" hidden>
+        <div class="auth-head">
+          <h1 id="otp-title" tabindex="-1">Check your email</h1>
           <p id="otp-message">Enter the 6-digit code we sent you. It expires in 10 minutes.</p>
         </div>
-        <div class="field">
+
+        <div class="auth-field">
           <label for="otp-code">Verification code</label>
           <input id="otp-code" class="otp-input" name="code" type="text" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" spellcheck="false">
         </div>
-        <button id="otp-submit" class="btn btn-primary" type="submit">Verify</button>
-        <button id="otp-resend" class="btn btn-ghost" type="button">Send a new code</button>
+
+        <button id="otp-submit" class="auth-submit" type="submit">Verify</button>
         <p id="otp-status" class="status" role="status" aria-live="polite"></p>
+
+        <p class="auth-switch">Did not get it? <button id="otp-resend" class="link-button" type="button">Send a new code</button></p>
       </form>
-    </section>
+    </div>
   </main>
 </body>
 </html>
