@@ -47,13 +47,46 @@ request ─► Nominatim ─► Overpass ─► ranking ─► Claude ─► val
    falls back to straight-line distances and says so. Routing never fails a request.
 
 The web page at `/` shows the plan: day tabs, stop cards and a Leaflet map that follow each other,
-in a light or dark theme that follows the system.
+in a dark theme. When accounts are switched on, `/auth.html` handles sign-up, sign-in and password
+reset, and the planner shows an account menu. Planning does not need an account yet.
+
+## Accounts
+
+Accounts are optional and switch on only when `DATABASE_URL`, both Turnstile keys and
+`OTP_HMAC_KEY` are set (see [Configuration](#configuration)). Setting only some of them stops
+startup.
+
+- **Sign-up.** A username (3 to 32 letters, digits or underscores, some names reserved), an email
+  and a password typed twice, behind a Cloudflare Turnstile check. A 6-digit code is emailed to
+  confirm the address. A taken email gets the same answer as a new one; the real owner is told
+  about the attempt by email instead.
+- **Passwords.** 12 to 128 characters with uppercase, lowercase, a digit and a symbol, not
+  containing the username or the start of the email, and not found in known breaches (checked
+  with the [Pwned Passwords](https://haveibeenpwned.com/API/v3#PwnedPasswords) range API, which
+  only ever receives the first 5 characters of the password's SHA-1 hash). Stored as argon2id
+  hashes. If the breach check is unreachable, the password is accepted and a warning is logged.
+- **Sign-in** with the username or email. An unconfirmed address gets a confirmation code first;
+  an account with two-factor sign-in turned on gets a code by email every time. After 3 failed
+  sign-ins in 15 minutes for one account or one client address, the Turnstile check is required.
+- **One-time codes.** 6 digits, valid for 10 minutes, usable once, locked after 5 wrong guesses,
+  stored only as an HMAC. A new code for the same account and purpose waits 60 seconds, and at
+  most 5 are emailed per account and purpose per hour.
+- **Password reset.** A code is emailed after a Turnstile check. The answer is the same whether
+  or not the address has an account. The new password must pass the same rules and breach check.
+  A successful reset signs every device out, voids all open codes, confirms the email address
+  and tells the owner by email.
+- **Sessions.** A random token in a `__Host-` cookie (`Secure`, `HttpOnly`, `SameSite=Lax`),
+  stored only as a hash. A session ends after 7 days without use or 30 days in total. Requests
+  that change state are refused when the browser reports them as coming from another site.
+
+Account emails are printed to the server console for now, not sent. An email provider is needed
+before accounts can be used by anyone else.
 
 ## Quick start
 
 Requirements:
 
-- Python 3.11 or newer (developed on 3.14, also run on 3.12 and 3.13)
+- Python 3.11 or newer (tested on 3.12 and 3.13)
 - An [Anthropic API key](https://console.anthropic.com)
 - A contact address for the OpenStreetMap services (see [Data and licences](#data-and-licences))
 - Optional: a free [openrouteservice key](https://openrouteservice.org/dev/#/signup) for the
@@ -83,6 +116,18 @@ uvicorn app.main:app --workers 1
 
 `.env` is ignored by git. Never commit it.
 
+To switch accounts on, start the local PostgreSQL from `docker-compose.yml` (it listens on
+`127.0.0.1` only and needs `POSTGRES_PASSWORD` set in your shell), set `DATABASE_URL`,
+`TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` and `OTP_HMAC_KEY` in `.env`, then create the tables:
+
+```bash
+docker compose up -d
+alembic upgrade head
+```
+
+`.env.example` lists Cloudflare's published Turnstile test keys for local development. They pass
+every check, so never use them on a server; the app logs a warning when they are set.
+
 ## Configuration
 
 All settings come from `.env` in the project root. Real environment variables take precedence
@@ -104,12 +149,22 @@ Error messages name the setting but never print its value.
 | `DEMO_ACCESS_CODE` | empty | Optional. When set, the page asks for this code; 8 to 200 printable ASCII characters, no spaces |
 | `RATE_LIMIT_PER_IP_HOUR` | `5` | Itinerary requests per client address per rolling hour, 1 to 1000 |
 | `DAILY_ITINERARY_CAP` | `100` | Itinerary requests for all clients per rolling 24 hours, 1 to 10000 |
+| `DATABASE_URL` | empty | Optional, for accounts. Must start with `postgresql+asyncpg://`; holds the database password |
+| `TURNSTILE_SITE_KEY` | empty | Optional, for accounts. Public; set together with the secret key |
+| `TURNSTILE_SECRET_KEY` | empty | Optional, for accounts. Never logged or returned |
+| `OTP_HMAC_KEY` | empty | Optional, for accounts. At least 32 printable characters; changing it voids every open code |
 | `LOG_LEVEL` | `INFO` | The Anthropic and HTTP client loggers stay at `WARNING`, because at debug level they log request bodies |
 
 A long random access code can be generated with:
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(16))"
+```
+
+and an `OTP_HMAC_KEY` with:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
 ## API
@@ -218,6 +273,7 @@ the submitted values:
 |---|---|---|
 | 401 | `access_denied` | `DEMO_ACCESS_CODE` is set and the `X-Access-Code` header is missing or wrong |
 | 404 | `city_not_found` | Nominatim has no match for the city |
+| 403 | `cross_site_request` | A state-changing `/api` request that the browser reports as coming from another site |
 | 413 | `payload_too_large` | Request body over 16 KB |
 | 422 | `invalid_request` | Request body does not match the rules above |
 | 422 | `not_enough_places` | Too few usable places near the city for the number of days |
@@ -237,11 +293,45 @@ one of the hourly requests, which makes guessing as slow as planning.
 
 Returns `{"status": "ok"}`. It calls no external service and is never rate limited.
 
+### Account routes
+
+All under `/api/auth`. Every route except `GET /captcha` answers `503 accounts_unavailable` when
+accounts are off. Request bodies reject unknown fields.
+
+| Route | Body | Answer |
+|---|---|---|
+| `GET /captcha` | none | `{"site_key": ...}`, `null` when accounts are off |
+| `POST /signup` | `username`, `email`, `password`, `password_confirm`, `captcha_token` | `202`, `{"status": "otp_required", "challenge_id": ...}` |
+| `POST /otp/verify` | `challenge_id`, `code` | `{"status": "signed_in", "username": ...}` and the session cookie |
+| `POST /otp/resend` | `challenge_id` | `202`, a new `challenge_id`; the old code stops working |
+| `POST /signin` | `identifier`, `password`, `captcha_token` when asked for | `signed_in` with the cookie, or `otp_required` when a code was emailed |
+| `POST /password/forgot` | `email`, `captcha_token` | `202`, `otp_required` with a `challenge_id`, the same for unknown addresses |
+| `POST /password/reset` | `challenge_id`, `code`, `password`, `password_confirm` | `{"status": "password_changed"}`, every session ended |
+| `POST /signout` | none | `{"status": "signed_out"}`, the cookie cleared |
+| `GET /me` | none | `username`, `email`, `two_factor_enabled` |
+| `POST /2fa` | `enabled`, `password` | the account as from `/me` |
+
+Account errors use the same shape as above:
+
+| Status | Code | Cause |
+|---|---|---|
+| 400 | `captcha_required` | Sign-in after repeated failures without a Turnstile token |
+| 400 | `captcha_failed` | The Turnstile token was rejected or was solved for another form |
+| 400 | `password_breached` | The password appears in known breaches |
+| 400 | `password_personal` | On reset, the password contains the username or the start of the email |
+| 400 | `invalid_code` | The code is wrong, expired, used, locked or for another purpose |
+| 401 | `invalid_credentials` | Wrong username, email or password |
+| 401 | `not_signed_in` | `/me` or `/2fa` without a valid session |
+| 409 | `username_taken` | Sign-up with a username already in use |
+| 429 | `rate_limited` | Too many codes requested for this account; see `Retry-After` |
+| 503 | `accounts_unavailable` | Accounts are not configured on this server |
+
 ## Deployment
 
-- **Run one worker.** Caches, rate limits and the pauses after upstream refusals live in process
-  memory. More workers would multiply the request rate to the public OpenStreetMap and routing
-  servers beyond their policies and each would keep its own limits.
+- **Run one worker.** Caches, rate limits, the failed sign-in counts and the pauses after upstream
+  refusals live in process memory. More workers would multiply the request rate to the public
+  OpenStreetMap and routing servers beyond their policies and each would keep its own limits.
+  Accounts, sessions and the code limits are in PostgreSQL and are shared already.
 - **Behind a reverse proxy,** set uvicorn's `FORWARDED_ALLOW_IPS` to the proxy's address (it
   accepts networks too). Uvicorn then resolves the real client address from `X-Forwarded-For`
   before the app sees it. The app itself never reads that header, so a client cannot fake its
@@ -253,7 +343,10 @@ Returns `{"status": "ok"}`. It calls no external service and is never rate limit
   styles and fonts only from this site, map tiles only from `tile.openstreetmap.org`),
   `Referrer-Policy: strict-origin-when-cross-origin` (the OSM tile policy needs a referrer),
   `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` and `Cache-Control: no-store` on
-  `/api`. The API docs pages skip the CSP, because Swagger UI loads its own scripts.
+  `/api`. The API docs pages skip the CSP, because Swagger UI loads its own scripts. `/auth.html`
+  also allows scripts and frames from `challenges.cloudflare.com` for the Turnstile widget.
+- **The API docs are public.** `/docs`, `/redoc` and `/openapi.json` are served to anyone and list
+  every route, including the account routes.
 - **Logs** contain request counts, timings, token use and failure reasons. They never contain API
   keys, access codes, client addresses, city names or place names.
 
@@ -283,16 +376,23 @@ All measured in October 2026 with `claude-sonnet-5-5` at `medium` effort.
 python -m pytest -q
 ```
 
-867 tests, no network access and no API key needed. External services are replaced with
-`httpx.MockTransport`; the API tests use FastAPI's `TestClient` with fake services. The
-frontend has no JavaScript test runner. Instead, `tests/test_frontend.py` checks the contract
-between the page and the API:
+954 tests, no network access and no API key needed. External services are replaced with
+`httpx.MockTransport`; the API tests use FastAPI's `TestClient` with fake services.
+
+32 of them need PostgreSQL and are skipped unless `TEST_DATABASE_URL` points at a throwaway
+database. Each run drops and recreates every table in it, so never point it at a database you
+want to keep. The local database from `docker-compose.yml` works for this.
+
+The frontend has no JavaScript test runner. Instead, `tests/test_frontend.py` and
+`tests/test_auth_frontend.py` check the contract between the pages and the API:
 
 - every error code the API can return has a message on the page;
 - every response field the page reads exists in the response schema;
 - the form limits match the request schema;
 - the page has no inline scripts or styles that the CSP would block;
-- the vendored Leaflet files match the 1.9.4 release byte for byte.
+- the vendored Leaflet files match the 1.9.4 release byte for byte;
+- every endpoint the auth page calls exists, and each form's Turnstile action is the one its
+  route checks.
 
 Each module was also checked by mutation testing: breaking the code on purpose in many small ways
 (a flipped comparison, a removed check, a wrong constant) and confirming that the tests fail every
@@ -306,7 +406,22 @@ app/
   main.py                FastAPI app, startup wiring, error mapping, /api routes, static page
   config.py              settings from .env, logging setup
   schemas.py             data models, model-output validation, distance calculation
-  security.py            access code, rate limits, security headers
+  security.py            access code, rate limits, security headers, cross-site check
+  auth/
+    routes.py            /api/auth routes
+    schemas.py           account request bodies
+    passwords.py         argon2id hashing
+    password_policy.py   password rules
+    breach.py            Pwned Passwords range check
+    captcha.py           Turnstile verification, failed sign-in counts
+    otp.py               one-time codes, attempt and send limits
+    sessions.py          session tokens and cookie
+    email.py             account email texts, development console sender
+    errors.py            account error codes
+  db/
+    engine.py            database url check, connection pool
+    models.py            users, sessions and one-time codes
+    users.py             account lookup and creation
   services/
     geocoder.py          Nominatim client
     overpass_client.py   Overpass client, place ranking and filtering
@@ -319,9 +434,12 @@ app/
     http_guard.py        User-Agent and URL checks, response size limits
 frontend/
   index.html, app.js, styles.css
+  auth.html, auth.js, auth.css
   vendor/leaflet/        Leaflet 1.9.4 with its licence
   fonts/                 Geist variable font with its licence
-tests/                   one test module per app module, plus the frontend contract
+migrations/              Alembic schema migrations for the account tables
+tests/                   one test module per app module, plus the frontend contracts
+docker-compose.yml       local PostgreSQL for development
 ```
 
 ## Data and licences
@@ -355,6 +473,12 @@ tests/                   one test module per app module, plus the frontend contr
   clear error.
 - **Single process.** Caches and limits are per process, so the app must run as one worker and
   a restart clears them.
+- **Account emails are not sent.** They are printed to the server console until an email
+  provider is connected.
+- **No cleanup job.** Used and expired one-time codes are never deleted, an expired session is
+  deleted only when its cookie comes back, and unconfirmed accounts keep their username and email.
+- **Account routes are limited per account, not per address.** Sign-up, sign-in and password
+  reset rely on Turnstile and the per-account code limits; there is no per-address limit yet.
 - **Budget is only a hint.** OpenStreetMap has no prices, so the plan cannot keep to a budget.
 - **No opening hours.** A plan may include a place that is closed that day.
 - **Dense cities can still fill a batch.** In central Paris the 400 notable buildings fill their
@@ -368,18 +492,20 @@ tests/                   one test module per app module, plus the frontend contr
 
 ## Future improvements and roadmap
 
-TrueRoute is planned to grow from a demo into a full SaaS product. The access code and per-address
-limits in place today would be replaced by real accounts and plan-based quotas.
+TrueRoute is planned to grow from a demo into a full SaaS product. Accounts exist now (see
+[Accounts](#accounts)); the access code and per-address limits on planning would be replaced by
+plan-based quotas per account.
 
 ### Accounts and security
 
-- **Full authentication system.** Sign-up and sign-in with unique usernames, email ownership
-  confirmed with one-time verification codes and the same codes available as a second factor at
-  sign-in. Strict password rules (minimum length and complexity, confirmation on entry, checks
-  against known breached passwords), passwords stored only as slow salted hashes and a CAPTCHA
-  on sign-up and repeated failed sign-ins to stop automated abuse.
-- **Session security.** Short-lived sessions in secure, HTTP-only cookies, sign-out on all devices,
-  and rate limits per account as well as per address.
+- **Email delivery.** Send account emails through a transactional email provider instead of the
+  console.
+- **Cleanup.** A scheduled job that deletes expired codes and sessions and releases unconfirmed
+  accounts after a while.
+- **Rate limits per address** on the account routes, in addition to the per-account limits.
+- **Account settings.** Change the password and email while signed in, and sign out on all
+  devices from the account menu.
+- **API docs off by default** on a public server.
 
 ### Plans and billing
 
