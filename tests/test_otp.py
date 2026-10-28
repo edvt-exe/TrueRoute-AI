@@ -122,16 +122,17 @@ def test_resend_waits_and_retires_the_old_code() -> None:
 
 
 @needs_db
-def test_hourly_email_cap() -> None:
+def test_hourly_email_cap_is_per_purpose() -> None:
     async def scenario(session: AsyncSession) -> None:
         user_id = await new_user(session)
         step = RESEND_COOLDOWN + timedelta(seconds=1)
         for i in range(MAX_SENDS_PER_HOUR):
-            await issue_at(session, user_id, NOW + step * i)
-        # the cap counts every purpose, switching purpose does not get around it
+            await issue_at(session, user_id, NOW + step * i, purpose="reset_password")
         with pytest.raises(OtpThrottledError):
-            await issue_at(session, user_id, NOW + step * MAX_SENDS_PER_HOUR, purpose="signin_2fa")
-        await issue_at(session, user_id, NOW + timedelta(hours=1, seconds=1))
+            await issue_at(session, user_id, NOW + step * MAX_SENDS_PER_HOUR, purpose="reset_password")
+        # a flood of reset requests must not block the codes a real sign-in needs, cap and cooldown alike
+        await issue_at(session, user_id, NOW + step * (MAX_SENDS_PER_HOUR - 1) + timedelta(seconds=5), purpose="signin_2fa")
+        await issue_at(session, user_id, NOW + timedelta(hours=1, seconds=1), purpose="reset_password")
 
     run(scenario)
 

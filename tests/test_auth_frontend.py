@@ -1,10 +1,12 @@
 import re
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.auth import password_policy
+from app.auth import routes as auth_routes
 from app.auth.errors import AUTH_ERRORS
 from app.auth.schemas import OTP_PATTERN, USERNAME_PATTERN
 from app.main import FRONTEND_DIR, create_app
@@ -67,6 +69,26 @@ def test_scripts_only_touch_elements_that_exist() -> None:
         assert used <= ids(html), used - ids(html)
 
 
+def test_captcha_actions_match_the_server() -> None:
+    # a drifted name would make cloudflare's real widget fail every attempt while fake-captcha tests stay green
+    server = set(re.findall(r'action="(\w+)"', Path(auth_routes.__file__).read_text(encoding="utf-8")))
+    client = set(re.findall(r': "(\w+)"', const(AUTH_JS, "CAPTCHA_ACTIONS")))
+    assert client == server == {"signup", "signin", "reset"}
+
+
+def test_every_view_and_field_has_what_the_script_expects() -> None:
+    page = Page()
+    page.feed(AUTH_HTML)
+    page_ids = ids(AUTH_HTML)
+    views = re.findall(r'"(\w+)"', const(AUTH_JS, "VIEWS"))
+    assert len(views) >= 5
+    assert {f"{v}-form" for v in views} | {f"{v}-title" for v in views} <= page_ids
+    # auth.js writes to <field>-error, a field without that slot would stop the script
+    fields = {a["id"] for t, a in page.tags if t == "input" and a.get("id")}
+    fields |= {a["id"] for _, a in page.tags if a.get("id") and "captcha" in (a.get("class") or "").split()}
+    assert {f"{f}-error" for f in fields} <= page_ids, {f"{f}-error" for f in fields} - page_ids
+
+
 def test_auth_page_stays_self_contained() -> None:
     page = Page()
     page.feed(AUTH_HTML)
@@ -79,3 +101,32 @@ def test_auth_page_stays_self_contained() -> None:
     assert TURNSTILE_SCRIPT in AUTH_JS
     for banned in ("localStorage", "sessionStorage", "document.cookie", "innerHTML"):
         assert banned not in AUTH_JS
+
+
+def test_turnstile_is_quiet_english_and_the_submit_waits_for_it() -> None:
+    start = AUTH_JS.index("window.turnstile.render")
+    options = AUTH_JS[start : AUTH_JS.index("\n  });", start)]
+    for option in ('size: "flexible"', 'theme: "dark"', 'appearance: "interaction-only"', 'language: "en"', "action: CAPTCHA_ACTIONS[slotId]"):
+        assert option in options, option
+    for callback in ("callback", "before-interactive-callback", "after-interactive-callback", "expired-callback", "timeout-callback", "error-callback"):
+        assert f"{callback}:" in options.replace('"', ""), callback
+    # the buttons are disabled from the check state, whichever way the form got busy or idle again
+    controls = AUTH_JS[AUTH_JS.index("function syncControls") : AUTH_JS.index("function setBusy")]
+    assert '=== "running"' in controls and "state.busy ||" in controls
+    # while the script is still loading the button stays live so the click can explain why
+    assert "captcha_loading" in AUTH_JS[AUTH_JS.index("function captchaProblem") :]
+
+
+def test_check_label_and_frame_start_hidden_on_every_form() -> None:
+    slots = re.findall(r'"([a-z]+-captcha)":', const(AUTH_JS, "CAPTCHA_ACTIONS"))
+    assert len(slots) == 3
+    for slot in slots:
+        name = slot.removesuffix("-captcha")
+        wrapper = (
+            rf'<div class="auth-field captcha-field is-quiet">\s*<span class="auth-label" id="{name}-check-label" inert>[^<]*</span>\s*'
+            rf'<div id="{slot}" class="captcha" role="group" aria-labelledby="{name}-check-label" inert'
+        )
+        assert re.search(wrapper, AUTH_HTML), slot
+    assert "Loading verification" not in AUTH_HTML
+    css = (FRONTEND_DIR / "auth.css").read_text(encoding="utf-8")
+    assert re.search(r"\.captcha-field\.is-quiet > \.captcha \{[^}]*height: 0;[^}]*overflow: hidden;", css)

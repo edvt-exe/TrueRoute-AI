@@ -14,9 +14,10 @@ CODE_DIGITS = 6
 TTL = timedelta(minutes=10)
 # wrong guesses per code, 5 of a million possible codes is a 1 in 200 000 chance
 MAX_ATTEMPTS = 5
-# a new code for the same account waits this long
+# a new code for the same account and purpose waits this long
 RESEND_COOLDOWN = timedelta(seconds=60)
-# emails per account per hour, all purposes together, so nobody can flood an inbox
+# emails per account per hour for each purpose, so nobody can flood an inbox, and a flood of
+# password reset requests cannot use up the budget for the codes a real sign-in needs
 MAX_SENDS_PER_HOUR = 5
 MIN_KEY_BYTES = 32
 # 32 random bytes, url-safe, 43 characters, fits the request schema pattern
@@ -62,13 +63,13 @@ async def issue(session: AsyncSession, *, user_id: uuid.UUID, purpose: str, key:
     now = _aware(now)
     # the account row lock makes concurrent requests for one account take turns
     await session.execute(select(User.id).where(User.id == user_id).with_for_update())
-    sent = select(OtpChallenge.created_at).where(OtpChallenge.user_id == user_id)
+    sent = select(OtpChallenge.created_at).where(OtpChallenge.user_id == user_id, OtpChallenge.purpose == purpose)
     last = (await session.execute(sent.order_by(OtpChallenge.created_at.desc()).limit(1))).scalar_one_or_none()
     if last is not None and now - last < RESEND_COOLDOWN:
         raise OtpThrottledError(_seconds_until(last + RESEND_COOLDOWN, now))
     hour_ago = now - timedelta(hours=1)
     recent = select(func.count(), func.min(OtpChallenge.created_at)).where(
-        OtpChallenge.user_id == user_id, OtpChallenge.created_at > hour_ago
+        OtpChallenge.user_id == user_id, OtpChallenge.purpose == purpose, OtpChallenge.created_at > hour_ago
     )
     count, oldest = (await session.execute(recent)).one()
     if count >= MAX_SENDS_PER_HOUR and oldest is not None:
@@ -93,6 +94,13 @@ async def issue(session: AsyncSession, *, user_id: uuid.UUID, purpose: str, key:
     )
     await session.flush()
     return challenge_id, code
+
+
+async def retire_open(session: AsyncSession, *, user_id: uuid.UUID, now: datetime) -> None:
+    # after a password reset no earlier code, of any purpose, may still finish a sign-in
+    await session.execute(
+        update(OtpChallenge).where(OtpChallenge.user_id == user_id, OtpChallenge.consumed_at.is_(None)).values(consumed_at=_aware(now))
+    )
 
 
 async def verify(session: AsyncSession, *, challenge_id: str, code: str, purpose: str, key: bytes, now: datetime) -> uuid.UUID | None:

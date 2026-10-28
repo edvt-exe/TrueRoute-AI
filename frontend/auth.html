@@ -13,6 +13,12 @@
   <script src="auth.js" defer></script>
 </head>
 <body class="auth-page">
+  <svg class="auth-route" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">
+    <path d="M-60 810C130 800 250 660 320 540S380 330 540 310S860 360 1000 330S1250 150 1500 170"></path>
+    <circle cx="320" cy="540" r="5"></circle>
+    <circle cx="1000" cy="330" r="5"></circle>
+    <circle cx="150" cy="790" r="5"></circle>
+  </svg>
   <header class="auth-header">
     <a class="brand" href="/" aria-label="TrueRoute home">
       <svg class="brand-mark" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
@@ -26,7 +32,7 @@
   </header>
 
   <main class="auth-main">
-    <div class="auth-card">
+    <div id="auth-card" class="auth-card">
       <form id="signin-form" class="auth-form" novalidate aria-labelledby="signin-title">
         <div class="auth-head">
           <h1 id="signin-title" tabindex="-1">Sign in to TrueRoute</h1>
@@ -36,23 +42,27 @@
         <div class="auth-field">
           <label for="signin-identifier">Username or email</label>
           <input id="signin-identifier" name="identifier" type="text" required maxlength="254" autocomplete="username" autocapitalize="none" spellcheck="false">
+          <div class="collapse"><div><p id="signin-identifier-error" class="field-error"></p></div></div>
         </div>
         <div class="auth-field">
-          <label for="signin-password">Password</label>
+          <div class="label-row">
+            <label for="signin-password">Password</label>
+            <button class="link-quiet" type="button" data-view="forgot">Forgot password?</button>
+          </div>
           <div class="reveal-wrap">
             <input id="signin-password" name="password" type="password" required maxlength="256" autocomplete="current-password">
             <button class="reveal" type="button" data-reveal="signin-password" aria-pressed="false" aria-label="Show password">Show</button>
           </div>
+          <div class="collapse"><div><p id="signin-password-error" class="field-error"></p></div></div>
         </div>
-        <div class="auth-field">
-          <span class="auth-label" id="signin-check-label">Verification</span>
-          <div id="signin-captcha" class="captcha" role="group" aria-labelledby="signin-check-label" hidden>
-            <p class="captcha-note">Loading verification…</p>
-          </div>
+        <div class="auth-field captcha-field is-quiet">
+          <span class="auth-label" id="signin-check-label" inert>Verification</span>
+          <div id="signin-captcha" class="captcha" role="group" aria-labelledby="signin-check-label" inert hidden></div>
+          <div class="collapse"><div><p id="signin-captcha-error" class="field-error"></p></div></div>
         </div>
 
-        <button id="signin-submit" class="auth-submit" type="submit">Sign in</button>
-        <p id="signin-status" class="status" role="status" aria-live="polite"></p>
+        <button id="signin-submit" class="auth-submit" type="submit"><span class="btn-spinner" aria-hidden="true"></span><span class="btn-label">Sign in</span></button>
+        <div class="collapse"><div><p id="signin-status" class="status" role="status" aria-live="polite"></p></div></div>
 
         <p class="auth-switch">New to TrueRoute? <button class="link-button" type="button" data-view="signup">Create an account</button></p>
       </form>
@@ -67,10 +77,12 @@
           <label for="signup-username">Username</label>
           <input id="signup-username" name="username" type="text" required minlength="3" maxlength="32" autocomplete="username" autocapitalize="none" spellcheck="false" aria-describedby="username-hint">
           <p id="username-hint" class="auth-hint">3 to 32 letters, digits or underscores.</p>
+          <div class="collapse"><div><p id="signup-username-error" class="field-error"></p></div></div>
         </div>
         <div class="auth-field">
           <label for="signup-email">Email</label>
           <input id="signup-email" name="email" type="email" required maxlength="254" autocomplete="email" spellcheck="false">
+          <div class="collapse"><div><p id="signup-email-error" class="field-error"></p></div></div>
         </div>
         <div class="auth-field">
           <label for="signup-password">Password</label>
@@ -84,20 +96,21 @@
             <li data-rule="personal">Does not contain your username or email</li>
             <li data-rule="match">Both passwords match</li>
           </ul>
+          <div class="collapse"><div><p id="signup-password-error" class="field-error"></p></div></div>
         </div>
         <div class="auth-field">
           <label for="signup-confirm">Confirm password</label>
           <input id="signup-confirm" name="password_confirm" type="password" required maxlength="256" autocomplete="new-password">
+          <div class="collapse"><div><p id="signup-confirm-error" class="field-error"></p></div></div>
         </div>
-        <div class="auth-field">
-          <span class="auth-label" id="signup-check-label">Verification</span>
-          <div id="signup-captcha" class="captcha" role="group" aria-labelledby="signup-check-label">
-            <p class="captcha-note">Loading verification…</p>
-          </div>
+        <div class="auth-field captcha-field is-quiet">
+          <span class="auth-label" id="signup-check-label" inert>Verification</span>
+          <div id="signup-captcha" class="captcha" role="group" aria-labelledby="signup-check-label" inert></div>
+          <div class="collapse"><div><p id="signup-captcha-error" class="field-error"></p></div></div>
         </div>
 
-        <button id="signup-submit" class="auth-submit" type="submit">Create account</button>
-        <p id="signup-status" class="status" role="status" aria-live="polite"></p>
+        <button id="signup-submit" class="auth-submit" type="submit"><span class="btn-spinner" aria-hidden="true"></span><span class="btn-label">Create account</span></button>
+        <div class="collapse"><div><p id="signup-status" class="status" role="status" aria-live="polite"></p></div></div>
         <p class="auth-fine">We check new passwords against known data breaches. Only an anonymous fragment of a hash leaves our server, never the password.</p>
 
         <p class="auth-switch">Already have an account? <button class="link-button" type="button" data-view="signin">Sign in</button></p>
@@ -112,12 +125,81 @@
         <div class="auth-field">
           <label for="otp-code">Verification code</label>
           <input id="otp-code" class="otp-input" name="code" type="text" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" spellcheck="false">
+          <div class="collapse"><div><p id="otp-code-error" class="field-error"></p></div></div>
         </div>
 
-        <button id="otp-submit" class="auth-submit" type="submit">Verify</button>
-        <p id="otp-status" class="status" role="status" aria-live="polite"></p>
+        <button id="otp-submit" class="auth-submit" type="submit"><span class="btn-spinner" aria-hidden="true"></span><span class="btn-label">Verify</span></button>
+        <div class="collapse"><div><p id="otp-status" class="status" role="status" aria-live="polite"></p></div></div>
 
-        <p class="auth-switch">Did not get it? <button id="otp-resend" class="link-button" type="button">Send a new code</button></p>
+        <p class="auth-switch">Did not get it? <button id="otp-resend" class="link-button" type="button" data-locks>Send a new code</button></p>
+      </form>
+
+      <form id="forgot-form" class="auth-form" novalidate aria-labelledby="forgot-title" hidden>
+        <ol class="trail" aria-label="Password reset, step 1 of 2">
+          <li class="is-current" aria-current="step">Email</li>
+          <li>New password</li>
+        </ol>
+        <div class="auth-head">
+          <h1 id="forgot-title" tabindex="-1">Reset your password</h1>
+          <p>Enter the email on your account. If it has one, we send a 6-digit code there.</p>
+        </div>
+
+        <div class="auth-field">
+          <label for="forgot-email">Email</label>
+          <input id="forgot-email" name="email" type="email" required maxlength="254" autocomplete="email" spellcheck="false">
+          <div class="collapse"><div><p id="forgot-email-error" class="field-error"></p></div></div>
+        </div>
+        <div class="auth-field captcha-field is-quiet">
+          <span class="auth-label" id="forgot-check-label" inert>Verification</span>
+          <div id="forgot-captcha" class="captcha" role="group" aria-labelledby="forgot-check-label" inert></div>
+          <div class="collapse"><div><p id="forgot-captcha-error" class="field-error"></p></div></div>
+        </div>
+
+        <button id="forgot-submit" class="auth-submit" type="submit"><span class="btn-spinner" aria-hidden="true"></span><span class="btn-label">Send code</span></button>
+        <div class="collapse"><div><p id="forgot-status" class="status" role="status" aria-live="polite"></p></div></div>
+
+        <p class="auth-switch">Remembered it? <button class="link-button" type="button" data-view="signin">Sign in</button></p>
+      </form>
+
+      <form id="reset-form" class="auth-form" novalidate aria-labelledby="reset-title" hidden>
+        <ol class="trail" aria-label="Password reset, step 2 of 2">
+          <li class="is-done">Email</li>
+          <li class="is-current" aria-current="step">New password</li>
+        </ol>
+        <div class="auth-head">
+          <h1 id="reset-title" tabindex="-1">Choose a new password</h1>
+          <p>Enter the code from the email and a new password. Every device is signed out.</p>
+        </div>
+
+        <div class="auth-field">
+          <label for="reset-code">Verification code</label>
+          <input id="reset-code" class="otp-input" name="code" type="text" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" spellcheck="false">
+          <div class="collapse"><div><p id="reset-code-error" class="field-error"></p></div></div>
+        </div>
+        <div class="auth-field">
+          <label for="reset-password">New password</label>
+          <div class="reveal-wrap">
+            <input id="reset-password" name="password" type="password" required maxlength="256" autocomplete="new-password" aria-describedby="reset-rules">
+            <button class="reveal" type="button" data-reveal="reset-password" aria-pressed="false" aria-label="Show password">Show</button>
+          </div>
+          <ul id="reset-rules" class="rules" aria-label="Password rules">
+            <li data-rule="length">12 to 128 characters</li>
+            <li data-rule="classes">Uppercase, lowercase, a digit and a symbol</li>
+            <li data-rule="match">Both passwords match</li>
+          </ul>
+          <div class="collapse"><div><p id="reset-password-error" class="field-error"></p></div></div>
+        </div>
+        <div class="auth-field">
+          <label for="reset-confirm">Confirm new password</label>
+          <input id="reset-confirm" name="password_confirm" type="password" required maxlength="256" autocomplete="new-password">
+          <div class="collapse"><div><p id="reset-confirm-error" class="field-error"></p></div></div>
+        </div>
+
+        <button id="reset-submit" class="auth-submit" type="submit"><span class="btn-spinner" aria-hidden="true"></span><span class="btn-label">Change password</span></button>
+        <div class="collapse"><div><p id="reset-status" class="status" role="status" aria-live="polite"></p></div></div>
+        <p class="auth-fine">The password also cannot contain your username or the start of your email. We check it against known data breaches too.</p>
+
+        <p class="auth-switch">No code yet? <button id="reset-restart" class="link-button" type="button" data-locks>Start again</button></p>
       </form>
     </div>
   </main>

@@ -63,6 +63,16 @@ def code_email(to: str, purpose: str, code: str) -> EmailMessage:
     return EmailMessage(to=to, subject=SUBJECTS[purpose], text=text)
 
 
+def password_changed_email(to: str) -> EmailMessage:
+    # the owner hears about every change, a reset nobody asked for is visible even if the code was stolen
+    text = (
+        "The password of your TrueRoute account was just changed, and every device was signed out.\n\n"
+        "If that was you, there is nothing to do.\n"
+        "If it was not you, reset your password again right away and check who else can read this mailbox."
+    )
+    return EmailMessage(to=to, subject="Your TrueRoute password was changed", text=text)
+
+
 def existing_account_email(to: str) -> EmailMessage:
     # sign-up answers the same for a taken email, the real owner learns about the attempt here
     text = (

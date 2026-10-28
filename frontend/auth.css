@@ -1,18 +1,48 @@
-/* sign in, create account and code entry: one card on the black page, tokens from styles.css */
+/* account pages: one raised card on the black page, tokens from styles.css */
 .auth-page {
-  --card: #0d0d0f;
-  --card-border: #2a2a2a;
-  --field: #121212;
-  --field-border: #2a2a2a;
-  --field-hover: #3a3a3a;
-  --field-focus: #e6e6e6;
-  --label: #a1a1a1;
-  --muted: #7a7a7a;
+  --card: var(--surface);
+  /* a low-opacity hairline reads as an edge of light, not as a drawn border */
+  --card-edge: rgb(255 255 255 / 0.075);
+  --field-hover: #3b3b41;
+  --label: var(--text-2);
+  /* lifted from the planner's muted grey so small print keeps 4.5:1 on the card */
+  --muted: #8a8a94;
   --heading: #ffffff;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --collapse-ms: 220ms;
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  background: #000000;
+  min-height: 100dvh;
+  background: var(--bg);
+}
+
+/* a faint dotted route behind the card, a neutral hairline so amber stays reserved for real routes */
+.auth-route {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.auth-route path {
+  fill: none;
+  stroke: rgb(255 255 255 / 0.11);
+  stroke-width: 1.5;
+  stroke-dasharray: 0.1 8;
+  stroke-linecap: round;
+}
+
+.auth-route circle {
+  fill: var(--bg);
+  stroke: rgb(255 255 255 / 0.16);
+  stroke-width: 1.5;
+}
+
+.auth-header,
+.auth-main {
+  position: relative;
 }
 
 /* page frame: brand left, way back right, no bar behind them */
@@ -24,10 +54,14 @@
 }
 
 .auth-back {
+  margin: -6px -8px;
+  padding: 6px 8px;
+  border-radius: 6px;
   color: var(--label);
   font-size: 13px;
   font-weight: 500;
   text-decoration: none;
+  transition: color 140ms ease;
 }
 
 .auth-back:hover {
@@ -39,21 +73,45 @@
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: 6vh 16px 64px;
+  padding: 7vh 16px 72px;
 }
 
+/* the card: a lighter surface than the page, an inner top highlight and a long soft shadow */
 .auth-card {
   width: 100%;
-  max-width: 416px;
-  padding: 40px 40px 32px;
+  max-width: 432px;
+  padding: 44px 40px 32px;
   background: var(--card);
-  border: 1px solid var(--card-border);
-  border-radius: 12px;
+  border: 1px solid var(--card-edge);
+  border-radius: 16px;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.045),
+    0 1px 2px rgb(0 0 0 / 0.5),
+    0 24px 48px -16px rgb(0 0 0 / 0.85);
+}
+
+/* height is animated between views by auth.js, clipped only while it moves */
+.auth-card.is-resizing {
+  overflow: hidden;
+  transition: height 300ms var(--ease);
+}
+
+@keyframes view-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .auth-form {
-  display: grid;
-  gap: 20px;
+  display: flex;
+  flex-direction: column;
+  animation: view-in 280ms var(--ease) both;
 }
 
 .auth-form[hidden] {
@@ -63,31 +121,95 @@
 .auth-head {
   display: grid;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 28px;
 }
 
 .auth-head h1 {
   color: var(--heading);
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 600;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.03em;
   line-height: 1.2;
 }
 
-.auth-head h1:focus {
+/* focus lands here on a view switch so readers announce it, it is not a control and needs no ring */
+.auth-head h1:focus,
+.auth-head h1:focus-visible {
   outline: none;
+  box-shadow: none;
 }
 
 .auth-head p {
   color: var(--label);
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 
-/* fields: a small muted label above a filled input */
-.auth-field {
-  display: grid;
+/* reset steps: two trail markers on a route line, the only colour on the page besides errors */
+.trail {
+  display: flex;
+  align-items: center;
+  margin: 0 0 22px;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.trail li {
+  display: flex;
+  align-items: center;
   gap: 8px;
+  white-space: nowrap;
+  transition: color 200ms ease;
+}
+
+.trail li:first-child {
+  flex: 1;
+}
+
+.trail li::before {
+  content: "";
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid #46464d;
+  border-radius: 50%;
+}
+
+.trail li:first-child::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  margin: 0 12px 0 4px;
+  background: var(--border-strong);
+}
+
+.trail .is-done::before,
+.trail .is-current::before {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.trail .is-current::before {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* the traveled part of the line, same specificity as the base rule and later, so it wins */
+.trail li.is-done::after {
+  background: var(--accent-line);
+}
+
+.trail .is-current {
+  color: var(--heading);
+}
+
+/* fields: a small label above a filled input, spacing by margin so hidden parts leave no gap */
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 18px;
 }
 
 .auth-field:has(> .captcha[hidden]) {
@@ -95,23 +217,42 @@
 }
 
 .auth-field > label,
-.auth-label {
+.auth-label,
+.label-row > label {
   color: var(--label);
   font-size: 13px;
   font-weight: 500;
+  line-height: 1.2;
+}
+
+.auth-field > label,
+.auth-field > .auth-label {
+  margin-bottom: 8px;
+}
+
+.label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
 }
 
 .auth-card input {
   width: 100%;
-  height: 44px;
-  padding: 0 14px;
+  height: 48px;
+  padding: 0 16px;
   background: var(--field);
   border: 1px solid var(--field-border);
-  border-radius: 8px;
+  border-radius: 10px;
   box-shadow: none;
   color: var(--heading);
-  font-size: 14px;
-  transition: border-color 120ms ease;
+  font-size: 15px;
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+
+.auth-card input::placeholder {
+  color: var(--muted);
 }
 
 .auth-card input:hover {
@@ -120,10 +261,27 @@
 
 .auth-card input:focus-visible {
   border-color: var(--field-focus);
+  background: #161616;
   box-shadow: none;
 }
 
+.auth-card input[aria-invalid="true"],
+.captcha.is-invalid {
+  border-color: var(--danger);
+}
+
+/* the browser's own autofill colours would break the dark card */
+.auth-card input:-webkit-autofill,
+.auth-card input:-webkit-autofill:hover,
+.auth-card input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--heading);
+  caret-color: var(--heading);
+  box-shadow: 0 0 0 100px var(--field) inset;
+  transition: background-color 9999s ease-out;
+}
+
 .auth-hint {
+  margin-top: 8px;
   color: var(--muted);
   font-size: 12px;
 }
@@ -134,13 +292,13 @@
 }
 
 .reveal-wrap input {
-  padding-right: 68px;
+  padding-right: 72px;
 }
 
 .reveal {
   position: absolute;
-  top: 7px;
-  right: 7px;
+  top: 9px;
+  right: 8px;
   height: 30px;
   padding: 0 10px;
   border: 0;
@@ -150,18 +308,49 @@
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
 }
 
 .reveal:hover {
-  background: #1c1c1c;
+  background: #1d1d20;
   color: var(--heading);
+}
+
+/* a message that opens and closes by height, so the form eases instead of jumping */
+.collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--collapse-ms) var(--ease);
+}
+
+.collapse.is-open {
+  grid-template-rows: 1fr;
+}
+
+.collapse > div {
+  min-height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  transition: visibility 0s linear var(--collapse-ms);
+}
+
+.collapse.is-open > div {
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.field-error {
+  padding-top: 7px;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 16px;
 }
 
 /* password rules: a quiet list under the field, each line brightens once met */
 .rules {
   display: grid;
-  gap: 6px;
-  margin: 2px 0 0;
+  gap: 7px;
+  margin: 12px 0 0;
   padding: 0;
   list-style: none;
   color: var(--muted);
@@ -171,9 +360,9 @@
 .rules li {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 9px;
   line-height: 16px;
-  transition: color 120ms ease;
+  transition: color 160ms ease;
 }
 
 .rules li::before {
@@ -182,8 +371,9 @@
   width: 12px;
   height: 12px;
   margin-top: 2px;
-  border: 1px solid #3a3a3a;
+  border: 1px solid #44444b;
   border-radius: 50%;
+  transition: border-color 160ms ease, background-color 160ms ease;
 }
 
 .rules li.met {
@@ -202,10 +392,11 @@
   display: grid;
   align-items: center;
   min-height: 65px;
-  padding: 0 14px;
+  padding: 0 16px;
   background: var(--field);
   border: 1px solid var(--field-border);
-  border-radius: 8px;
+  border-radius: 10px;
+  transition: border-color 160ms ease;
 }
 
 .captcha.is-loaded {
@@ -219,49 +410,131 @@
   font-size: 13px;
 }
 
-/* the one primary action: solid white, bold black */
-.auth-submit {
+/* interaction-only: the label and frame stay out of sight (and out of the tab order) until cloudflare needs a click, the message row below keeps working */
+.captcha-field {
+  position: relative;
+}
+
+.captcha-field.is-quiet {
+  margin-bottom: 0;
+}
+
+.captcha-field.is-quiet > .auth-label,
+.captcha-field.is-quiet > .captcha {
+  position: absolute;
   width: 100%;
-  height: 44px;
-  margin-top: 4px;
+  height: 0;
+  min-height: 0;
+  padding: 0;
   border: 0;
-  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* the one primary action: solid white, bold black, a spinner replaces nothing and moves nothing */
+.auth-submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  height: 48px;
+  margin-top: 6px;
+  border: 0;
+  border-radius: 10px;
   background: #ffffff;
   color: #000000;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   cursor: pointer;
-  transition: background-color 120ms ease;
+  transition: background-color 140ms ease, transform 90ms ease;
 }
 
 .auth-submit:hover:not(:disabled) {
   background: #d6d6d6;
 }
 
+.auth-submit:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
 .auth-submit:disabled {
   opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* while waiting the button keeps full strength and shows a spinner beside the new label */
+.auth-submit.is-loading:disabled {
+  opacity: 1;
   cursor: progress;
 }
 
 .auth-submit:focus-visible {
-  box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--field-focus);
+  box-shadow: 0 0 0 2px var(--card), 0 0 0 4px rgb(237 237 239 / 0.75);
 }
 
-.auth-form .status {
-  margin-top: -8px;
+.btn-spinner {
+  display: none;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgb(0 0 0 / 0.2);
+  border-top-color: #000000;
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
 }
 
-.auth-form .status.is-error {
-  padding: 10px 12px;
-  border: 1px solid rgb(242 112 107 / 0.3);
-  border-radius: 8px;
-  background: rgb(242 112 107 / 0.06);
-  color: #f2908b;
+.auth-submit.is-loading .btn-spinner {
+  display: block;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* form-level answers: plain progress, a quiet confirmation or an error box */
+.collapse > div > .status {
+  min-height: 0;
+  margin-top: 14px;
+  color: var(--label);
   font-size: 13px;
+  line-height: 1.5;
+}
+
+.collapse > div > .status.is-error {
+  padding: 11px 14px;
+  border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent);
+  border-radius: 10px;
+  background: var(--danger-soft);
+  color: #f5918c;
+}
+
+.collapse > div > .status.is-ok {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.status.is-ok::before {
+  content: "";
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  border-radius: 50%;
+  background: var(--heading)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3.2 6.2 5.1 8 8.8 4.2' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / 14px 14px no-repeat;
 }
 
 .auth-fine {
-  margin-top: -4px;
+  margin-top: 16px;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.55;
@@ -269,24 +542,31 @@
 
 /* switching views: one quiet line under a hairline */
 .auth-switch {
+  margin-top: 24px;
   padding-top: 20px;
-  border-top: 1px solid #1f1f1f;
+  border-top: 1px solid rgb(255 255 255 / 0.06);
   color: var(--muted);
   font-size: 13px;
   text-align: center;
 }
 
-.link-button {
+.link-button,
+.link-quiet {
   padding: 0;
   border: 0;
+  border-radius: 4px;
   background: none;
-  color: var(--heading);
   font: inherit;
+  cursor: pointer;
+}
+
+.link-button {
+  color: var(--heading);
   font-weight: 500;
   text-decoration: underline;
-  text-decoration-color: #4a4a4a;
+  text-decoration-color: #55555c;
   text-underline-offset: 3px;
-  cursor: pointer;
+  transition: text-decoration-color 140ms ease;
 }
 
 .link-button:hover {
@@ -298,13 +578,30 @@
   cursor: progress;
 }
 
+.link-quiet {
+  color: var(--label);
+  font-size: 12px;
+  font-weight: 500;
+  transition: color 140ms ease;
+}
+
+.link-quiet:hover {
+  color: var(--heading);
+}
+
 .otp-input.otp-input {
-  height: 56px;
-  font-size: 24px;
+  height: 60px;
+  padding-left: calc(16px + 0.55em);
+  font-size: 26px;
   font-variant-numeric: tabular-nums;
-  letter-spacing: 0.5em;
+  letter-spacing: 0.55em;
   text-align: center;
-  padding-left: calc(14px + 0.5em);
+}
+
+@media (max-width: 640px) {
+  .auth-route {
+    display: none;
+  }
 }
 
 @media (max-width: 480px) {
@@ -317,14 +614,34 @@
   }
 
   .auth-card {
-    padding: 28px 20px 24px;
+    padding: 32px 20px 24px;
+    border-radius: 14px;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .auth-form {
+    animation: none;
+  }
+
+  .auth-card.is-resizing,
   .auth-card input,
+  .auth-back,
+  .captcha,
+  .collapse,
+  .collapse > div,
   .rules li,
+  .rules li::before,
+  .reveal,
+  .trail li,
+  .link-button,
+  .link-quiet,
   .auth-submit {
     transition: none;
+  }
+
+  /* no spinning, the changed label and the ring still say that something is happening */
+  .btn-spinner {
+    animation: none;
   }
 }

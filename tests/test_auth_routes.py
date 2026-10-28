@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.breach import BreachStatus
 from app.auth.captcha import FailedSignIns
 from app.auth.email import EmailMessage
-from app.auth.otp import RESEND_COOLDOWN
+from app.auth.otp import MAX_ATTEMPTS, RESEND_COOLDOWN
 from app.auth.passwords import Passwords
 from app.auth.routes import AuthServices
 from app.auth.sessions import COOKIE_NAME
@@ -24,6 +24,7 @@ from tests.test_db import TEST_URL, needs_db, run, schema  # noqa: F401  schema 
 from tests.test_main import fakes
 
 PW = "Walk-the-Seine-42"
+NEW_PW = "Cross-the-Bridge-77"
 START = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
 
 
@@ -108,6 +109,17 @@ def verify(client: TestClient, challenge_id: str, code: str) -> dict:
 def signin(client: TestClient, identifier: str = "eduard", password: str = PW, captcha: str | None = None) -> dict:
     body = {"identifier": identifier, "password": password} | ({"captcha_token": captcha} if captcha else {})
     res = client.post("/api/auth/signin", json=body)
+    return {"http": res.status_code, **res.json()}
+
+
+def forgot(client: TestClient, email: str = "eduard@example.com", token: str = "ok-reset") -> dict:
+    res = client.post("/api/auth/password/forgot", json={"email": email, "captcha_token": token})
+    return {"http": res.status_code, **res.json()}
+
+
+def reset(client: TestClient, challenge_id: str, code: str, password: str = NEW_PW) -> dict:
+    body = {"challenge_id": challenge_id, "code": code, "password": password, "password_confirm": password}
+    res = client.post("/api/auth/password/reset", json=body)
     return {"http": res.status_code, **res.json()}
 
 
@@ -240,6 +252,129 @@ def test_resend_replaces_the_code_and_is_throttled(world: tuple[TestClient, Worl
     assert second["challenge_id"] != first["challenge_id"]
     assert code_of(verify(client, first["challenge_id"], first_code)) == "invalid_code"
     assert verify(client, second["challenge_id"], w.outbox.code())["status"] == "signed_in"
+
+
+# password reset
+
+
+@needs_db
+def test_reset_changes_the_password_and_signs_every_device_out(world: tuple[TestClient, World]) -> None:
+    client, w = world
+    registered(client, w)
+    old_cookie = client.cookies.get(COOKIE_NAME)
+    # a sign-in code left open before the reset
+    assert client.post("/api/auth/2fa", json={"enabled": True, "password": PW}).status_code == 200
+    w.now += RESEND_COOLDOWN
+    pending = signin(client)
+    assert pending["status"] == "otp_required"
+    old_code = w.outbox.code()
+
+    started = forgot(client)
+    assert started["http"] == 202 and w.outbox.sent[-1].subject == "Reset your TrueRoute password"
+    done = reset(client, started["challenge_id"], w.outbox.code())
+    assert done == {"http": 200, "status": "password_changed"}
+    assert w.outbox.sent[-1].subject == "Your TrueRoute password was changed" and w.outbox.sent[-1].to == "eduard@example.com"
+    # every session is gone, this browser's cookie and any other, and nobody is signed in by the reset
+    assert client.get("/api/auth/me").status_code == 401
+    assert client.cookies.get(COOKIE_NAME) is None
+    assert client.get("/api/auth/me", headers={"Cookie": f"{COOKIE_NAME}={old_cookie}"}).status_code == 401
+    assert code_of(verify(client, pending["challenge_id"], old_code)) == "invalid_code"
+    assert code_of(signin(client, password=PW)) == "invalid_credentials"
+    # the new password works and two-factor still applies on top of it
+    w.now += RESEND_COOLDOWN
+    again = signin(client, password=NEW_PW)
+    assert again["status"] == "otp_required"
+    assert verify(client, again["challenge_id"], w.outbox.code())["status"] == "signed_in"
+    # the code worked once
+    assert code_of(reset(client, started["challenge_id"], "000000")) == "invalid_code"
+
+
+@needs_db
+def test_reset_also_confirms_an_unconfirmed_email(world: tuple[TestClient, World]) -> None:
+    client, w = world
+    signup(client)
+    started = forgot(client)
+    assert reset(client, started["challenge_id"], w.outbox.code())["status"] == "password_changed"
+    # the code reached the mailbox, so no second confirmation is asked for
+    assert signin(client, password=NEW_PW)["status"] == "signed_in"
+
+
+@needs_db
+def test_forgot_answers_the_same_for_every_address(world: tuple[TestClient, World]) -> None:
+    client, w = world
+    registered(client, w)
+    before = len(w.outbox.sent)
+    real = forgot(client, email="EDUARD@example.com")
+    assert len(w.outbox.sent) == before + 1 and w.outbox.sent[-1].to == "eduard@example.com"
+    unknown = forgot(client, email="nobody@example.com")
+    throttled = forgot(client)
+    for answer in (real, unknown, throttled):
+        assert answer["http"] == 202 and answer["status"] == "otp_required" and len(answer["challenge_id"]) == 43
+    # the unknown address and the throttled account get no mail and no refusal that would give them away
+    assert len(w.outbox.sent) == before + 1
+    # a decoy is not a challenge
+    assert code_of(reset(client, unknown["challenge_id"], "123456")) == "invalid_code"
+    assert code_of(reset(client, throttled["challenge_id"], "123456")) == "invalid_code"
+
+
+@needs_db
+def test_forgot_needs_the_human_check_for_its_own_action(world: tuple[TestClient, World]) -> None:
+    client, w = world
+    registered(client, w)
+    before = len(w.outbox.sent)
+    assert code_of(forgot(client, token="ok-signin")) == "captcha_failed"
+    assert code_of(forgot(client, token="ok-signup")) == "captcha_failed"
+    assert len(w.outbox.sent) == before
+
+
+@needs_db
+def test_reset_codes_stay_out_of_sign_in_and_back(world: tuple[TestClient, World]) -> None:
+    client, w = world
+    pending = signup(client)
+    signup_code = w.outbox.code()
+    started = forgot(client)
+    reset_code = w.outbox.code()
+    # the sign-in routes refuse a reset challenge: no session, and a resend sends nothing
+    assert code_of(verify(client, started["challenge_id"], reset_code)) == "invalid_code"
+    assert client.get("/api/auth/me").status_code == 401
+    sent = len(w.outbox.sent)
+    w.now += RESEND_COOLDOWN
+    assert client.post("/api/auth/otp/resend", json={"challenge_id": started["challenge_id"]}).status_code == 202
+    assert len(w.outbox.sent) == sent
+    # and a sign-up code cannot reset a password
+    assert code_of(reset(client, pending["challenge_id"], signup_code)) == "invalid_code"
+
+
+@needs_db
+def test_reset_code_locks_after_five_wrong_guesses(world: tuple[TestClient, World]) -> None:
+    client, w = world
+    registered(client, w)
+    started = forgot(client)
+    code = w.outbox.code()
+    wrong_code = f"{(int(code) + 1) % 10**6:06d}"
+    for _ in range(MAX_ATTEMPTS):
+        assert code_of(reset(client, started["challenge_id"], wrong_code)) == "invalid_code"
+    # the right code is refused once the attempts ran out, and nothing changed
+    assert code_of(reset(client, started["challenge_id"], code)) == "invalid_code"
+    assert signin(client)["status"] == "signed_in"
+
+
+@needs_db
+def test_refused_new_password_leaves_the_code_usable(world: tuple[TestClient, World]) -> None:
+    client, w = world
+    registered(client, w)
+    started = forgot(client)
+    code = w.outbox.code()
+    # the policy answers before the code is touched
+    assert reset(client, started["challenge_id"], code, password="short")["http"] == 422
+    # the username rule needs the account, so it runs after the code and has its own answer
+    assert code_of(reset(client, started["challenge_id"], code, password="Eduard-Walks-42!")) == "password_personal"
+    w.breach.status = BreachStatus.BREACHED
+    assert code_of(reset(client, started["challenge_id"], code)) == "password_breached"
+    w.breach.status = BreachStatus.CLEAN
+    # none of that used up the code or changed the password
+    assert reset(client, started["challenge_id"], code)["status"] == "password_changed"
+    assert code_of(signin(client, password=PW)) == "invalid_credentials"
 
 
 # configuration

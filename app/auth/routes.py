@@ -6,26 +6,44 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Protocol
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.breach import BreachStatus
 from app.auth.captcha import FailedSignIns
-from app.auth.email import EmailSender, code_email, existing_account_email
+from app.auth.email import EmailMessage, EmailSender, code_email, existing_account_email, password_changed_email
 from app.auth.errors import AuthError
-from app.auth.otp import CHALLENGE_BYTES, OtpThrottledError, issue, verify
+from app.auth.otp import CHALLENGE_BYTES, OtpThrottledError, issue, retire_open, verify
+from app.auth.password_policy import uses_personal_data
 from app.auth.passwords import Passwords
-from app.auth.schemas import OtpVerifyRequest, ResendRequest, SignInRequest, SignUpRequest, TwoFactorRequest
-from app.auth.sessions import COOKIE_NAME, clear_session_cookie, create_session, current_user, revoke_session, set_session_cookie, utc_now
+from app.auth.schemas import (
+    ForgotPasswordRequest,
+    OtpVerifyRequest,
+    ResendRequest,
+    ResetPasswordRequest,
+    SignInRequest,
+    SignUpRequest,
+    TwoFactorRequest,
+)
+from app.auth.sessions import (
+    COOKIE_NAME,
+    clear_session_cookie,
+    create_session,
+    current_user,
+    revoke_all,
+    revoke_session,
+    set_session_cookie,
+    utc_now,
+)
 from app.db.models import OtpChallenge, User
 from app.db.users import EmailTakenError, UsernameTakenError, create_user, find_user
 from app.security import client_key
 
 logger = logging.getLogger(__name__)
 
-# codes typed into the sign-in page, password reset gets its own route later
+# codes typed into the sign-in page, a reset code has its own routes and must never finish a sign-in
 CODE_PURPOSES = ("verify_email", "signin_2fa")
 
 
@@ -59,6 +77,10 @@ class SignedIn(BaseModel):
     username: str
 
 
+class PasswordChanged(BaseModel):
+    status: Literal["password_changed"] = "password_changed"
+
+
 class Account(BaseModel):
     username: str
     email: str
@@ -84,6 +106,15 @@ def _decoy() -> CodeSent:
 
 def _account(user: User) -> Account:
     return Account(username=user.username, email=user.email, two_factor_enabled=user.two_factor_enabled)
+
+
+async def _send_after_response(sender: EmailSender, message: EmailMessage) -> None:
+    # runs once the answer is out, so the mail provider's speed cannot show whether an account exists
+    try:
+        await sender.send(message)
+    except Exception as exc:
+        # the type only, a provider error can carry the message text and with it a live code
+        logger.error("an account email could not be sent: %s", type(exc).__name__)
 
 
 router = APIRouter(prefix="/auth")
@@ -198,6 +229,71 @@ async def resend_code(body: ResendRequest, auth: AuthServices = Depends(auth_ser
             raise AuthError("rate_limited", exc.retry_after_s) from None
     await auth.email.send(code_email(row.User.email, row.purpose, code))
     return CodeSent(challenge_id=challenge_id)
+
+
+@router.post("/password/forgot", status_code=202, response_model=CodeSent)
+async def forgot_password(
+    body: ForgotPasswordRequest, request: Request, background: BackgroundTasks, auth: AuthServices = Depends(auth_services)
+) -> CodeSent:
+    if not await auth.captcha.verify(body.captcha_token, action="reset", remote_ip=_ip(request)):
+        raise AuthError("captcha_failed")
+    async with auth.db() as session:
+        try:
+            async with session.begin():
+                user = await find_user(session, body.email)
+                if user is None:
+                    return _decoy()
+                challenge_id, code = await issue(session, user_id=user.id, purpose="reset_password", key=auth.otp_key, now=auth.clock())
+        except OtpThrottledError:
+            # the same answer as a sent code, a refusal would show that the account exists
+            logger.info("password reset code throttled")
+            return _decoy()
+    background.add_task(_send_after_response, auth.email, code_email(user.email, "reset_password", code))
+    return CodeSent(challenge_id=challenge_id)
+
+
+@router.post("/password/reset", response_model=PasswordChanged)
+async def reset_password(
+    body: ResetPasswordRequest,
+    response: Response,
+    background: BackgroundTasks,
+    auth: AuthServices = Depends(auth_services),
+) -> PasswordChanged:
+    now = auth.clock()
+    password = body.password.get_secret_value()
+    refused = False
+    async with auth.db() as session:
+        # one transaction: a password that is refused below rolls back the code too, so it still works
+        async with session.begin():
+            user_id = await verify(
+                session, challenge_id=body.challenge_id, code=body.code, purpose="reset_password", key=auth.otp_key, now=now
+            )
+            if user_id is None:
+                # nothing is raised here, ending the block commits the attempt count
+                refused = True
+            else:
+                user = await session.get_one(User, user_id)
+                # only a holder of the real code gets this far, so these answers tell nobody anything new
+                if uses_personal_data(password, username=user.username, email=user.email):
+                    raise AuthError("password_personal")
+                breach = await auth.breach.check(password)
+                if breach is BreachStatus.BREACHED:
+                    raise AuthError("password_breached")
+                if breach is BreachStatus.UNKNOWN:
+                    logger.warning("breached password check unavailable, reset allowed without it")
+                user.password_hash = await auth.passwords.hash_async(password)
+                # the code went to this address, so using it proves the mailbox as well
+                if user.email_verified_at is None:
+                    user.email_verified_at = now
+                await revoke_all(session, user_id=user.id)
+                await retire_open(session, user_id=user.id, now=now)
+                email = user.email
+    if refused:
+        raise AuthError("invalid_code")
+    clear_session_cookie(response)
+    background.add_task(_send_after_response, auth.email, password_changed_email(email))
+    logger.info("password reset completed")
+    return PasswordChanged()
 
 
 @router.post("/signout")

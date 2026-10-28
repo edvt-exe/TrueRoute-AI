@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from app.auth.breach import BreachChecker, BreachStatus
 from app.auth.passwords import DEFAULT_HASHER, Passwords
-from app.auth.schemas import OtpVerifyRequest, SignInRequest, SignUpRequest
+from app.auth.schemas import ForgotPasswordRequest, OtpVerifyRequest, ResetPasswordRequest, SignInRequest, SignUpRequest
 
 PW = "Walk-the-Seine-42"
 UA = "TrueRoute-AI-tests/0.1 (+https://example.org/trueroute)"
@@ -194,6 +194,20 @@ def test_otp_code_must_be_six_digits() -> None:
     assert OtpVerifyRequest.model_validate({"challenge_id": "a" * 22, "code": "012345"}).code == "012345"
     with pytest.raises(ValidationError):
         OtpVerifyRequest.model_validate({"challenge_id": "a" * 22, "code": "12345a"})
+
+
+def test_reset_schema_applies_the_policy_but_not_the_account_rule() -> None:
+    base = {"challenge_id": "a" * 43, "code": "012345", "password": PW, "password_confirm": PW}
+    assert ResetPasswordRequest.model_validate(base).code == "012345"
+    # the username and email rule needs the account, the route applies it after the code is checked
+    own = "Eduard-Walks-42!"
+    assert ResetPasswordRequest.model_validate(base | {"password": own, "password_confirm": own})
+    with pytest.raises(ValidationError) as exc:
+        ResetPasswordRequest.model_validate(base | {"password": "walkingparis", "password_confirm": "walkingparis"})
+    assert "must include a digit" in str(exc.value) and "walkingparis" not in str(exc.value)
+    with pytest.raises(ValidationError):
+        ResetPasswordRequest.model_validate(base | {"password_confirm": "Walk-the-Seine-43"})
+    assert ForgotPasswordRequest.model_validate({"email": "Eduard@Example.com", "captcha_token": "x"}).email == "eduard@example.com"
 
 
 # breached passwords

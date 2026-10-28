@@ -32,6 +32,18 @@ def _raw_password(value: SecretStr) -> SecretStr:
     return value
 
 
+def _capped_email(value: object) -> object:
+    # cheap length check before the full address parser runs
+    if isinstance(value, str) and len(value) > MAX_EMAIL:
+        raise ValueError(f"must be at most {MAX_EMAIL} characters")
+    return value
+
+
+def _same_matching(first: SecretStr, second: SecretStr) -> bool:
+    # constant time, the comparison must not leak how much of the confirmation matched
+    return hmac.compare_digest(first.get_secret_value().encode(), second.get_secret_value().encode())
+
+
 class SignUpRequest(_Strict):
     username: str
     email: EmailStr
@@ -52,10 +64,7 @@ class SignUpRequest(_Strict):
     @field_validator("email", mode="before")
     @classmethod
     def _cap_email(cls, value: object) -> object:
-        # cheap length check before the full address parser runs
-        if isinstance(value, str) and len(value) > MAX_EMAIL:
-            raise ValueError(f"must be at most {MAX_EMAIL} characters")
-        return value
+        return _capped_email(value)
 
     @field_validator("email")
     @classmethod
@@ -70,12 +79,10 @@ class SignUpRequest(_Strict):
 
     @model_validator(mode="after")
     def _check_password(self) -> Self:
-        password = self.password.get_secret_value()
-        problems = password_problems(password, username=self.username, email=self.email)
+        problems = password_problems(self.password.get_secret_value(), username=self.username, email=self.email)
         if problems:
             raise ValueError(f"password {'; '.join(problems)}")
-        # constant time, the comparison must not leak how much of the confirmation matched
-        if not hmac.compare_digest(password.encode(), self.password_confirm.get_secret_value().encode()):
+        if not _same_matching(self.password, self.password_confirm):
             raise ValueError("passwords do not match")
         return self
 
@@ -107,6 +114,44 @@ class OtpVerifyRequest(_Strict):
 
 class ResendRequest(_Strict):
     challenge_id: str = Field(pattern=CHALLENGE_PATTERN)
+
+
+class ForgotPasswordRequest(_Strict):
+    email: EmailStr
+    captcha_token: str = Field(min_length=1, max_length=MAX_CAPTCHA_TOKEN)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _cap_email(cls, value: object) -> object:
+        return _capped_email(value)
+
+    @field_validator("email")
+    @classmethod
+    def _lower_email(cls, value: str) -> str:
+        return value.lower()
+
+
+class ResetPasswordRequest(_Strict):
+    challenge_id: str = Field(pattern=CHALLENGE_PATTERN)
+    code: str = Field(pattern=OTP_PATTERN)
+    password: SecretStr
+    password_confirm: SecretStr
+
+    @field_validator("password", "password_confirm")
+    @classmethod
+    def _cap_password(cls, value: SecretStr) -> SecretStr:
+        return _raw_password(value)
+
+    @model_validator(mode="after")
+    def _check_password(self) -> Self:
+        # the username and email rule runs in the route after the code is checked, this schema cannot
+        # know the account, and answering it earlier would tell a real challenge from a decoy
+        problems = password_problems(self.password.get_secret_value())
+        if problems:
+            raise ValueError(f"password {'; '.join(problems)}")
+        if not _same_matching(self.password, self.password_confirm):
+            raise ValueError("passwords do not match")
+        return self
 
 
 class TwoFactorRequest(_Strict):

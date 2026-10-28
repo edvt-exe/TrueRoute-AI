@@ -7,6 +7,7 @@ AUTH_ERRORS: dict[str, tuple[int, str]] = {
     "captcha_required": (400, "complete the human check"),
     "captcha_failed": (400, "the human check failed, try again"),
     "password_breached": (400, "this password appears in known data breaches, choose another"),
+    "password_personal": (400, "the password must not contain your username or email"),
     "username_taken": (409, "that username is taken"),
     "invalid_credentials": (401, "wrong username, email or password"),
     "invalid_code": (400, "that code is wrong or has expired"),

@@ -24,6 +24,12 @@ CHARACTER_TYPES: tuple[tuple[str, Callable[[str], bool]], ...] = (
 )
 
 
+def uses_personal_data(password: str, *, username: str, email: str) -> bool:
+    folded = normalize_password(password).casefold()
+    personal = (username, email.partition("@")[0])
+    return any(len(p) >= MIN_PERSONAL and p.casefold() in folded for p in personal)
+
+
 def password_problems(password: str, *, username: str = "", email: str = "") -> list[str]:
     # messages never include the password, they reach the client and may reach logs
     value = normalize_password(password)
@@ -37,8 +43,6 @@ def password_problems(password: str, *, username: str = "", email: str = "") -> 
     for name, is_type in CHARACTER_TYPES:
         if not any(is_type(ch) for ch in value):
             problems.append(f"must include {name}")
-    folded = value.casefold()
-    personal = (username, email.partition("@")[0])
-    if any(len(p) >= MIN_PERSONAL and p.casefold() in folded for p in personal):
+    if uses_personal_data(password, username=username, email=email):
         problems.append("must not contain your username or email")
     return problems
